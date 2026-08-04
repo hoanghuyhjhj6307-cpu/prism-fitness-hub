@@ -1,0 +1,3562 @@
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import {
+  LayoutDashboard, CalendarCheck, Dumbbell, Users, User, ChevronRight, ChevronLeft,
+  ChevronUp, ChevronDown, Flame, Trophy, Star, Plus, Check, X, Pencil, Copy, Trash2,
+  Play, Camera, TrendingUp, Clock, Target, GripVertical, Menu, ShieldCheck,
+  LogOut, ArrowLeft, BarChart3, Calendar, Search, Sparkles, Zap, Download,
+  Loader2, Save, RefreshCw, UserCheck, UserX, ListChecks,
+  Activity, Minus
+} from "lucide-react";
+import {
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
+  ResponsiveContainer, CartesianGrid,
+} from "recharts";
+import { supabase } from "./supabaseClient";
+
+/* =========================================================================
+   PRISM — private fitness hub
+   React app backed by Supabase (Postgres + Auth). Shared state (members,
+   programs, history) lives in one JSONB row; each user's photos live in
+   their own row. Auth is Google OAuth via Supabase Auth.
+   ========================================================================= */
+
+/* ---------------------------- Design tokens ---------------------------- */
+const GRAD = "grad-brand";
+const GRAD_DIAG = "grad-brand-diag";
+const GRAD_TEXT = "grad-brand-text";
+const GRAD_WARM = "grad-warm";
+
+const AVATAR_SWATCHES = [
+  "from-rose-500 to-pink-600",
+  "from-pink-500 to-fuchsia-600",
+  "from-orange-500 to-rose-500",
+  "from-amber-400 to-orange-500",
+  "from-lime-400 to-green-500",
+  "from-teal-400 to-emerald-500",
+  "from-sky-500 to-cyan-400",
+  "from-indigo-500 to-sky-500",
+  "from-purple-500 to-indigo-600",
+  "from-fuchsia-500 to-purple-600",
+];
+
+/* ------------------------------ Constants ------------------------------- */
+const DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const DAY_LABEL = { mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday", sun: "Sunday" };
+const DAY_SHORT = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
+const DAY_FROM_JS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]; // Date.getDay() index
+
+const GOALS = [
+  { id: "muscle", label: "Build Muscle", icon: "💪" },
+  { id: "fat", label: "Lose Fat", icon: "🔥" },
+  { id: "strength", label: "Strength", icon: "🏋️" },
+  { id: "hybrid", label: "Hybrid Athlete", icon: "⚡" },
+  { id: "running", label: "Running", icon: "🏃" },
+];
+// Goals can be one of the presets above, or free text the user typed in themselves
+// (GoalPicker stores that raw text as the id). This resolves either case to a
+// consistent { id, icon, label } shape so callers never have to special-case it.
+function goalInfo(goal) {
+  return GOALS.find((g) => g.id === goal) || (goal ? { id: goal, icon: "🎯", label: goal } : GOALS[3]);
+}
+
+// loadType controls how "weight" is captured for an exercise:
+//   "external"   — the lifter moves an added load (barbell/dumbbell/machine/cable/kettlebell).
+//                   The number entered IS the weight lifted.
+//   "bodyweight" — the lifter's own mass is the primary load (push-up, pull-up, squat…).
+//                   See computeBodyweightLoad() below for how total load is estimated.
+//   "cardio"     — duration/effort based; no meaningful "weight" to log.
+const MUSCLE_CATEGORIES = ["Chest", "Back", "Legs", "Glutes", "Shoulders", "Arms", "Core", "Cardio", "Full Body"];
+// Major muscle groups — the big, primary movers an exercise is actually built around.
+// This is deliberately a short list; Cardio/Full Body are excluded since they're workout
+// types, not muscles (Cardio is captured by the "How is it loaded?" selector instead).
+const MAIN_MUSCLE_OPTIONS = ["Chest", "Back", "Shoulders", "Biceps", "Triceps", "Forearms", "Abs", "Glutes", "Quads", "Hamstrings", "Calves"];
+// Smaller/stabilizer muscles and subdivisions of the major groups above — these only ever
+// show up as "also works" targets, never as the main muscle group of an exercise.
+const MINOR_MUSCLE_OPTIONS = ["Upper Back", "Lats", "Traps", "Lower Back", "Front Delts", "Side Delts", "Rear Delts", "Obliques", "Adductors", "Abductors", "Grip"];
+// Maps each major muscle group back to one of the broad MUSCLE_CATEGORIES so a custom
+// exercise still shows up under the right tab in the exercise browser.
+const MUSCLE_TO_CATEGORY = {
+  "Chest": "Chest",
+  "Back": "Back",
+  "Shoulders": "Shoulders",
+  "Biceps": "Arms", "Triceps": "Arms", "Forearms": "Arms",
+  "Abs": "Core",
+  "Glutes": "Glutes",
+  "Quads": "Legs", "Hamstrings": "Legs", "Calves": "Legs",
+};
+
+const EXERCISE_LIBRARY = [
+  // ---------------------------------- Chest ----------------------------------
+  { id: "ex_bench", name: "Barbell Bench Press", muscle: "Chest", secondary: ["Triceps", "Front Delts"], icon: "🏋️", loadType: "external", instructions: "Lie flat, grip the bar slightly wider than shoulder-width. Lower with control to mid-chest, then press up to full extension." },
+  { id: "ex_incline_bench", name: "Incline Barbell Press", muscle: "Chest", secondary: ["Front Delts", "Triceps"], icon: "🏋️", loadType: "external", instructions: "On a 30-45° incline bench, lower the bar to the upper chest, then press up to full extension." },
+  { id: "ex_decline_bench", name: "Decline Barbell Press", muscle: "Chest", secondary: ["Triceps"], icon: "🏋️", loadType: "external", instructions: "On a decline bench, lower the bar to the lower chest, then press up to full extension." },
+  { id: "ex_incline_db", name: "Incline Dumbbell Press", muscle: "Chest", secondary: ["Front Delts", "Triceps"], icon: "🏋️", loadType: "external", instructions: "On a 30-45° incline bench, press dumbbells up over the upper chest, then lower slowly until a stretch is felt." },
+  { id: "ex_flat_db_press", name: "Flat Dumbbell Press", muscle: "Chest", secondary: ["Triceps", "Front Delts"], icon: "🏋️", loadType: "external", instructions: "Lying flat, press dumbbells up over the chest until arms are extended, then lower with control." },
+  { id: "ex_decline_db_press", name: "Decline Dumbbell Press", muscle: "Chest", secondary: ["Triceps"], icon: "🏋️", loadType: "external", instructions: "On a decline bench, press dumbbells up over the lower chest until arms extend, then lower under control." },
+  { id: "ex_db_flye", name: "Dumbbell Flye", muscle: "Chest", secondary: ["Front Delts"], icon: "🏋️", loadType: "external", instructions: "Lying flat with a slight elbow bend, lower the dumbbells out to the sides in an arc, then bring them back together over the chest." },
+  { id: "ex_cable_crossover", name: "Cable Crossover", muscle: "Chest", secondary: ["Front Delts"], icon: "🏋️", loadType: "external", instructions: "Standing between two cable stacks, pull the handles down and together in front of the chest, squeezing at the finish." },
+  { id: "ex_low_cable_flye", name: "Low-to-High Cable Flye", muscle: "Chest", secondary: ["Front Delts"], icon: "🏋️", loadType: "external", instructions: "Cables set low, sweep the handles up and across the body in an arc to chest height, squeezing at the top." },
+  { id: "ex_high_cable_flye", name: "High-to-Low Cable Flye", muscle: "Chest", secondary: [], icon: "🏋️", loadType: "external", instructions: "Cables set high, sweep the handles down and across the body in an arc, squeezing the lower chest at the finish." },
+  { id: "ex_machine_press", name: "Machine Chest Press", muscle: "Chest", secondary: ["Triceps", "Front Delts"], icon: "🏋️", loadType: "external", instructions: "Sit tall, press the handles forward until arms are extended, then return under control." },
+  { id: "ex_smith_bench", name: "Smith Machine Bench Press", muscle: "Chest", secondary: ["Triceps", "Front Delts"], icon: "🏋️", loadType: "external", instructions: "Lying on the bench under a fixed-path bar, lower to mid-chest and press back up along the guided track." },
+  { id: "ex_pec_deck", name: "Pec Deck", muscle: "Chest", secondary: [], icon: "🏋️", loadType: "external", instructions: "Sit with elbows at shoulder height, bring the pads together in front of the chest, then return slowly." },
+  { id: "ex_landmine_press", name: "Landmine Press", muscle: "Chest", secondary: ["Front Delts", "Triceps", "Core"], icon: "🏋️", loadType: "external", instructions: "One end of the bar anchored, press the free end up and slightly forward from the shoulder, then lower under control." },
+  { id: "ex_dumbbell_pullover", name: "Dumbbell Pullover", muscle: "Chest", secondary: ["Back", "Core"], icon: "🏋️", loadType: "external", instructions: "Lying across a bench, lower a single dumbbell in an arc behind the head, then pull it back over the chest." },
+  { id: "ex_pushup", name: "Push-Up", muscle: "Chest", secondary: ["Triceps", "Core", "Front Delts"], icon: "🤸", loadType: "bodyweight", bwPercent: 64, instructions: "Hands under shoulders, body in a straight line. Lower chest to the floor, then press back up." },
+  { id: "ex_incline_pushup", name: "Incline Push-Up", muscle: "Chest", secondary: ["Triceps", "Core"], icon: "🤸", loadType: "bodyweight", bwPercent: 55, instructions: "Hands elevated on a bench or box, lower the chest toward it, then press back up. Easier than a standard push-up." },
+  { id: "ex_decline_pushup", name: "Decline Push-Up", muscle: "Chest", secondary: ["Triceps", "Front Delts", "Core"], icon: "🤸", loadType: "bodyweight", bwPercent: 74, instructions: "Feet elevated on a bench, hands on the floor. Lower the chest down, then press back up. Harder than a standard push-up." },
+  { id: "ex_diamond_pushup", name: "Diamond Push-Up", muscle: "Chest", secondary: ["Triceps", "Core"], icon: "🤸", loadType: "bodyweight", bwPercent: 68, instructions: "Hands together under the chest forming a diamond shape. Lower and press back up, emphasizing triceps and inner chest." },
+  { id: "ex_chest_dip", name: "Chest Dip", muscle: "Chest", secondary: ["Triceps", "Front Delts"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "On parallel bars, lean the torso forward and lower until a stretch is felt in the chest, then press back up." },
+  { id: "ex_machine_incline_press", name: "Machine Incline Press", muscle: "Chest", secondary: ["Front Delts", "Triceps"], icon: "🏋️", loadType: "external", instructions: "Sit on an incline angle, press the handles up and forward until arms extend, then return under control." },
+  { id: "ex_standing_cable_press", name: "Standing Cable Chest Press", muscle: "Chest", secondary: ["Triceps", "Front Delts"], icon: "🏋️", loadType: "external", instructions: "Standing in a staggered stance, press the handles forward from chest height until arms extend, then return under control." },
+  { id: "ex_guillotine_press", name: "Guillotine Press", muscle: "Chest", secondary: ["Front Delts", "Triceps"], icon: "🏋️", loadType: "external", instructions: "Lying flat, lower the bar to the neck/upper chest with elbows flared, then press back up — an advanced high-chest variation." },
+  { id: "ex_hex_press", name: "Hex Press", muscle: "Chest", secondary: ["Triceps"], icon: "🏋️", loadType: "external", instructions: "Lying flat, press two dumbbells together throughout the movement, squeezing the inner chest at the top." },
+  { id: "ex_svend_press", name: "Svend Press", muscle: "Chest", secondary: ["Front Delts"], icon: "🏋️", loadType: "external", instructions: "Press two plates together in front of the chest, squeezing tightly, then extend the arms straight out and pull back in." },
+  { id: "ex_band_chest_press", name: "Resistance Band Chest Press", muscle: "Chest", secondary: ["Triceps", "Front Delts"], icon: "🏋️", loadType: "external", instructions: "Anchored behind you, press the handles forward against band tension until arms extend, then control the return." },
+  { id: "ex_plyo_pushup", name: "Plyometric Push-Up", muscle: "Chest", secondary: ["Triceps", "Core"], icon: "🤸", loadType: "bodyweight", bwPercent: 90, instructions: "Explode up from the bottom of a push-up so the hands leave the floor, then land softly and reset." },
+  { id: "ex_archer_pushup", name: "Archer Push-Up", muscle: "Chest", secondary: ["Triceps", "Core"], icon: "🤸", loadType: "bodyweight", bwPercent: 90, instructions: "Wide hand position, shift the weight to one side lowering that shoulder while the other arm stays extended, then push back up and alternate." },
+  { id: "ex_weighted_pushup", name: "Weighted Push-Up", muscle: "Chest", secondary: ["Triceps", "Core"], icon: "🤸", loadType: "bodyweight", bwPercent: 70, instructions: "With a plate or vest adding load on the back, lower the chest to the floor, then press back up." },
+
+  // ----------------------------------- Back -----------------------------------
+  { id: "ex_deadlift", name: "Conventional Deadlift", muscle: "Back", secondary: ["Glutes", "Hamstrings", "Core"], icon: "🏋️", loadType: "external", instructions: "Hips back, flat spine, grip just outside the legs. Drive through the floor and stand tall, hips and shoulders rising together." },
+  { id: "ex_sumo_deadlift", name: "Sumo Deadlift", muscle: "Back", secondary: ["Glutes", "Legs", "Core"], icon: "🏋️", loadType: "external", instructions: "Wide stance, grip inside the knees. Drive through the floor keeping the chest tall, standing to full hip extension." },
+  { id: "ex_deficit_deadlift", name: "Deficit Deadlift", muscle: "Back", secondary: ["Glutes", "Hamstrings", "Core"], icon: "🏋️", loadType: "external", instructions: "Standing on a small platform for extra range, pull the bar from the floor to full lockout, keeping the spine flat." },
+  { id: "ex_rdl", name: "Romanian Deadlift", muscle: "Back", secondary: ["Hamstrings", "Glutes"], icon: "🏋️", loadType: "external", instructions: "Soft knees, hinge at the hips lowering the bar along the legs, then drive the hips forward to stand tall." },
+  { id: "ex_row", name: "Barbell Row", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🚣", loadType: "external", instructions: "Hinge at the hips, flat back. Pull the bar to the lower ribs, squeezing the shoulder blades together." },
+  { id: "ex_pendlay_row", name: "Pendlay Row", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🚣", loadType: "external", instructions: "Torso near-parallel to the floor, bar starts on the ground each rep. Explosively pull it to the lower chest, then reset." },
+  { id: "ex_tbar_row", name: "T-Bar Row", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🚣", loadType: "external", instructions: "Chest against the pad or hinged over the bar, pull the handles to the torso, squeezing the back at the top." },
+  { id: "ex_meadows_row", name: "Meadows Row", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🚣", loadType: "external", instructions: "One end of a landmine bar, hinge over and row it to the hip with a single arm, squeezing the back at the top." },
+  { id: "ex_chest_supported_row", name: "Chest-Supported Row", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🚣", loadType: "external", instructions: "Chest braced against an incline pad, row the handles to the torso, squeezing the shoulder blades together." },
+  { id: "ex_seated_row", name: "Seated Cable Row", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🚣", loadType: "external", instructions: "Sit tall, pull the handle to the torso keeping the back straight, then extend arms fully on the return." },
+  { id: "ex_db_row", name: "Single-Arm Dumbbell Row", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🚣", loadType: "external", instructions: "One hand and knee braced on a bench, pull the dumbbell to the hip, then lower under control." },
+  { id: "ex_latpull", name: "Lat Pulldown", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🧗", loadType: "external", instructions: "Grip the bar wide, pull down to the upper chest while keeping the torso tall, then control the return." },
+  { id: "ex_close_grip_pulldown", name: "Close-Grip Lat Pulldown", muscle: "Back", secondary: ["Biceps"], icon: "🧗", loadType: "external", instructions: "Using a close, neutral handle, pull down to the upper chest keeping elbows tucked, then control the return." },
+  { id: "ex_straight_arm_pulldown", name: "Straight-Arm Pulldown", muscle: "Back", secondary: ["Triceps", "Core"], icon: "🧗", loadType: "external", instructions: "Arms straight, sweep the bar down from overhead to the thighs, keeping a slight elbow bend throughout." },
+  { id: "ex_rack_pull", name: "Rack Pull", muscle: "Back", secondary: ["Glutes", "Hamstrings"], icon: "🏋️", loadType: "external", instructions: "Bar set at knee height in a rack. Drive through the floor and lock out the hips at the top." },
+  { id: "ex_good_morning", name: "Good Morning", muscle: "Back", secondary: ["Hamstrings", "Glutes"], icon: "🏋️", loadType: "external", instructions: "Bar on the upper back, hinge forward at the hips with a soft knee bend, then return to standing." },
+  { id: "ex_shrug", name: "Barbell Shrug", muscle: "Back", secondary: ["Traps"], icon: "🏋️", loadType: "external", instructions: "Holding the bar in front of the thighs, elevate the shoulders straight up toward the ears, then lower slowly." },
+  { id: "ex_db_shrug", name: "Dumbbell Shrug", muscle: "Back", secondary: ["Traps"], icon: "🏋️", loadType: "external", instructions: "Holding dumbbells at the sides, elevate the shoulders straight up toward the ears, then lower slowly." },
+  { id: "ex_hyperextension", name: "Back Extension", muscle: "Back", secondary: ["Glutes", "Hamstrings"], icon: "🏋️", loadType: "bodyweight", bwPercent: 55, instructions: "Hips hinged over the pad, lower the torso down with control, then raise back up to a flat line using the glutes and back." },
+  { id: "ex_pullup", name: "Pull-Up", muscle: "Back", secondary: ["Biceps"], icon: "🧗", loadType: "bodyweight", bwPercent: 100, instructions: "Hang from the bar with an overhand grip, pull the chest toward it until the chin clears, then lower under control." },
+  { id: "ex_chinup", name: "Chin-Up", muscle: "Back", secondary: ["Biceps"], icon: "🧗", loadType: "bodyweight", bwPercent: 100, instructions: "Hang from the bar with an underhand grip, pull the chest toward it until the chin clears, then lower under control." },
+  { id: "ex_inverted_row", name: "Inverted Row", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🧗", loadType: "bodyweight", bwPercent: 65, instructions: "Under a bar or rings, body straight, pull the chest up to the bar, then lower with control." },
+  { id: "ex_muscle_up", name: "Muscle-Up", muscle: "Back", secondary: ["Biceps", "Triceps", "Chest"], icon: "🧗", loadType: "bodyweight", bwPercent: 100, instructions: "Pull explosively from a hang to clear the bar with the chest, then transition and press up to full lockout above it." },
+  { id: "ex_wide_pullup", name: "Wide-Grip Pull-Up", muscle: "Back", secondary: ["Biceps"], icon: "🧗", loadType: "bodyweight", bwPercent: 100, instructions: "Hands wide on the bar, pull the chest up focusing on the lats, then lower under control." },
+  { id: "ex_weighted_pullup", name: "Weighted Pull-Up", muscle: "Back", secondary: ["Biceps"], icon: "🧗", loadType: "bodyweight", bwPercent: 100, instructions: "Add load via a belt or vest, pull the chest to the bar, then lower under control for a harder pull-up variation." },
+  { id: "ex_assisted_pullup", name: "Assisted Pull-Up (Machine)", muscle: "Back", secondary: ["Biceps"], icon: "🧗", loadType: "bodyweight", bwPercent: 60, instructions: "Using the assistance platform or band, pull the chest to the bar with reduced bodyweight load, then lower under control." },
+  { id: "ex_renegade_row", name: "Renegade Row", muscle: "Back", secondary: ["Core", "Triceps"], icon: "🚣", loadType: "external", instructions: "In a plank on dumbbells, row one dumbbell to the hip while stabilizing with the other arm, then alternate sides." },
+  { id: "ex_kroc_row", name: "Kroc Row", muscle: "Back", secondary: ["Biceps", "Traps"], icon: "🚣", loadType: "external", instructions: "Using a heavy dumbbell and some body english, row explosively to the hip, then lower with control." },
+  { id: "ex_seal_row", name: "Seal Row", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🚣", loadType: "external", instructions: "Lying face-down on a raised bench, row the bar straight up to the chest without any body swing, then lower." },
+  { id: "ex_landmine_row", name: "Landmine Row", muscle: "Back", secondary: ["Biceps", "Rear Delts"], icon: "🚣", loadType: "external", instructions: "One end of a landmine bar, hinge over and row it to the torso with both hands, then lower under control." },
+  { id: "ex_reverse_pulldown", name: "Reverse-Grip Lat Pulldown", muscle: "Back", secondary: ["Biceps"], icon: "🧗", loadType: "external", instructions: "Underhand grip, pull the bar down to the upper chest emphasizing the lower lats, then control the return." },
+  { id: "ex_cable_pullover", name: "Cable Pullover", muscle: "Back", secondary: ["Chest", "Triceps"], icon: "🧗", loadType: "external", instructions: "Standing with a straight bar on a high cable, sweep the arms down in an arc to the thighs, then return under control." },
+  { id: "ex_superman", name: "Superman", muscle: "Back", secondary: ["Glutes"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Lying face down, simultaneously raise the arms, chest, and legs off the floor, hold briefly, then lower." },
+
+  // ----------------------------------- Legs -----------------------------------
+  { id: "ex_squat", name: "Back Squat", muscle: "Legs", secondary: ["Glutes", "Core"], icon: "🦵", loadType: "external", instructions: "Bar on upper back, feet shoulder-width. Bend hips and knees until thighs are at least parallel, then drive up." },
+  { id: "ex_frontsquat", name: "Front Squat", muscle: "Legs", secondary: ["Glutes", "Core"], icon: "🦵", loadType: "external", instructions: "Bar racked across the front shoulders, elbows high. Squat down keeping the torso upright, then stand tall." },
+  { id: "ex_sumo_squat", name: "Sumo Squat", muscle: "Legs", secondary: ["Glutes", "Adductors"], icon: "🦵", loadType: "external", instructions: "Wide stance, toes turned out, holding a dumbbell or bar. Squat down between the legs, then drive back up." },
+  { id: "ex_goblet_squat", name: "Goblet Squat", muscle: "Legs", secondary: ["Glutes", "Core"], icon: "🦵", loadType: "external", instructions: "Holding a dumbbell at the chest, squat down keeping the torso upright, then drive back up through the heels." },
+  { id: "ex_zercher_squat", name: "Zercher Squat", muscle: "Legs", secondary: ["Glutes", "Core", "Back"], icon: "🦵", loadType: "external", instructions: "Bar cradled in the crooks of the elbows, squat down keeping the torso upright, then stand tall." },
+  { id: "ex_hacksquat", name: "Hack Squat", muscle: "Legs", secondary: ["Glutes"], icon: "🦵", loadType: "external", instructions: "Back against the pad on a hack squat machine, lower under control until knees reach ~90°, then press up." },
+  { id: "ex_legpress", name: "Leg Press", muscle: "Legs", secondary: ["Glutes"], icon: "🦵", loadType: "external", instructions: "Feet shoulder-width on the platform. Lower until knees reach ~90°, then press through the heels." },
+  { id: "ex_legext", name: "Leg Extension", muscle: "Legs", secondary: [], icon: "🦵", loadType: "external", instructions: "Seated, extend the knees to lift the pad until legs are straight, then lower slowly." },
+  { id: "ex_legcurl", name: "Leg Curl", muscle: "Legs", secondary: ["Hamstrings"], icon: "🦵", loadType: "external", instructions: "Lying or seated, curl the pad toward the glutes by flexing the knees, then lower under control." },
+  { id: "ex_stiff_leg_deadlift", name: "Stiff-Leg Deadlift", muscle: "Legs", secondary: ["Hamstrings", "Glutes", "Back"], icon: "🦵", loadType: "external", instructions: "With mostly straight legs, hinge at the hips lowering the bar along the shins, then drive the hips forward to stand." },
+  { id: "ex_bulgarian", name: "Bulgarian Split Squat", muscle: "Legs", secondary: ["Glutes"], icon: "🦵", loadType: "external", instructions: "Rear foot elevated on a bench, holding dumbbells. Lower the back knee toward the floor, then drive up through the front foot." },
+  { id: "ex_lunge_db", name: "Walking Lunge (Weighted)", muscle: "Legs", secondary: ["Glutes"], icon: "🦵", loadType: "external", instructions: "Holding dumbbells, step forward and lower the back knee toward the floor, then drive up and repeat on the other leg." },
+  { id: "ex_step_up", name: "Weighted Step-Up", muscle: "Legs", secondary: ["Glutes"], icon: "🦵", loadType: "external", instructions: "Holding dumbbells, step fully onto a box driving through the lead heel, then step down with control." },
+  { id: "ex_calf_raise", name: "Calf Raise (Machine)", muscle: "Legs", secondary: ["Calves"], icon: "🦵", loadType: "external", instructions: "Balls of the feet on the platform, rise onto the toes as high as possible, then lower until a stretch is felt." },
+  { id: "ex_seated_calf_raise", name: "Seated Calf Raise", muscle: "Legs", secondary: ["Calves"], icon: "🦵", loadType: "external", instructions: "Balls of the feet on the platform, knees bent under the pad, rise onto the toes, then lower to a full stretch." },
+  { id: "ex_adductor_machine", name: "Hip Adductor Machine", muscle: "Legs", secondary: ["Adductors"], icon: "🦵", loadType: "external", instructions: "Seated with the pads on the inner thighs, squeeze the legs together, then return under control." },
+  { id: "ex_abductor_machine", name: "Hip Abductor Machine", muscle: "Legs", secondary: ["Glutes"], icon: "🦵", loadType: "external", instructions: "Seated with the pads on the outer thighs, push the legs apart, then return under control." },
+  { id: "ex_glute_ham_raise", name: "Glute-Ham Raise", muscle: "Legs", secondary: ["Hamstrings", "Glutes"], icon: "🦵", loadType: "bodyweight", bwPercent: 100, instructions: "Anchored at the ankles, lower the torso forward under control using the hamstrings, then curl back up to vertical." },
+  { id: "ex_nordic_curl", name: "Nordic Hamstring Curl", muscle: "Legs", secondary: ["Hamstrings"], icon: "🦵", loadType: "bodyweight", bwPercent: 100, instructions: "Kneeling with ankles anchored, lower the torso forward as slowly as possible, then use the hamstrings to pull back up." },
+  { id: "ex_sissy_squat", name: "Sissy Squat", muscle: "Legs", secondary: ["Core"], icon: "🦵", loadType: "bodyweight", bwPercent: 100, instructions: "Rising onto the toes, lean back and bend the knees forward, lowering the torso in a straight line, then return up." },
+  { id: "ex_bw_squat", name: "Bodyweight Squat", muscle: "Legs", secondary: ["Glutes"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Feet shoulder-width. Bend hips and knees until thighs are at least parallel, then drive back up." },
+  { id: "ex_bw_lunge", name: "Walking Lunge", muscle: "Legs", secondary: ["Glutes"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Step forward, lower the back knee toward the floor, then drive up and repeat on the other leg." },
+  { id: "ex_pistol_squat", name: "Pistol Squat", muscle: "Legs", secondary: ["Glutes", "Core"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Balance on one leg, lower into a full squat while the other leg stays extended forward, then drive back up." },
+  { id: "ex_jump_squat", name: "Jump Squat", muscle: "Legs", secondary: ["Glutes", "Calves"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Squat down, then explode upward into a jump, landing softly and resetting for the next rep." },
+  { id: "ex_box_jump", name: "Box Jump", muscle: "Legs", secondary: ["Glutes", "Calves"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Swing the arms and jump explosively onto a box, landing softly with bent knees, then step back down." },
+  { id: "ex_wall_sit", name: "Wall Sit", muscle: "Legs", secondary: [], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Back flat against a wall, thighs parallel to the floor, hold the position for time." },
+  { id: "ex_bw_calf_raise", name: "Bodyweight Calf Raise", muscle: "Legs", secondary: ["Calves"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Standing, rise onto the toes as high as possible, then lower until a stretch is felt in the calves." },
+  { id: "ex_smith_squat", name: "Smith Machine Squat", muscle: "Legs", secondary: ["Glutes"], icon: "🦵", loadType: "external", instructions: "Feet slightly forward of the bar on a fixed track, squat down until thighs are at least parallel, then press up." },
+  { id: "ex_box_squat", name: "Box Squat", muscle: "Legs", secondary: ["Glutes"], icon: "🦵", loadType: "external", instructions: "Squat down to lightly touch a box behind you, then drive back up without relaxing at the bottom." },
+  { id: "ex_pause_squat", name: "Pause Squat", muscle: "Legs", secondary: ["Glutes", "Core"], icon: "🦵", loadType: "external", instructions: "Squat down and hold at the bottom for a count before driving back up, building strength out of the hole." },
+  { id: "ex_reverse_lunge_db", name: "Reverse Lunge (Weighted)", muscle: "Legs", secondary: ["Glutes"], icon: "🦵", loadType: "external", instructions: "Holding dumbbells, step backward and lower the back knee toward the floor, then drive up through the front foot." },
+  { id: "ex_lateral_lunge", name: "Lateral Lunge", muscle: "Legs", secondary: ["Glutes", "Adductors"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Step wide to one side, sit the hips back and bend that knee while the other leg stays straight, then push back to center." },
+  { id: "ex_cossack_squat", name: "Cossack Squat", muscle: "Legs", secondary: ["Glutes", "Adductors"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Wide stance, shift the weight to one side sinking into a deep squat on that leg while the other stays straight, then switch sides." },
+  { id: "ex_sled_push", name: "Sled Push", muscle: "Legs", secondary: ["Glutes", "Core"], icon: "🦵", loadType: "external", instructions: "Drive the sled forward with powerful, controlled strides, keeping the torso low and braced." },
+  { id: "ex_sled_pull", name: "Sled Pull (Backward Drag)", muscle: "Legs", secondary: ["Glutes", "Quads"], icon: "🦵", loadType: "external", instructions: "Facing the sled, walk backward pulling it toward you with steady tension through the straps." },
+  { id: "ex_standing_calf_raise", name: "Standing Barbell Calf Raise", muscle: "Legs", secondary: ["Calves"], icon: "🦵", loadType: "external", instructions: "Bar on the upper back, rise onto the toes as high as possible, then lower to a full stretch." },
+  { id: "ex_donkey_calf_raise", name: "Donkey Calf Raise", muscle: "Legs", secondary: ["Calves"], icon: "🦵", loadType: "external", instructions: "Hinged forward at the hips with weight loaded on the hips, rise onto the toes, then lower to a full stretch." },
+  { id: "ex_tibialis_raise", name: "Tibialis Raise", muscle: "Legs", secondary: [], icon: "🤸", loadType: "bodyweight", bwPercent: 30, instructions: "Leaning back against a wall, raise the toes up toward the shins repeatedly to build the tibialis muscle." },
+
+  // ---------------------------------- Glutes -----------------------------------
+  { id: "ex_hip_thrust", name: "Barbell Hip Thrust", muscle: "Glutes", secondary: ["Hamstrings"], icon: "🏋️", loadType: "external", instructions: "Upper back on a bench, bar over the hips. Drive through the heels to lock out the hips, then lower under control." },
+  { id: "ex_single_leg_hip_thrust", name: "Single-Leg Hip Thrust", muscle: "Glutes", secondary: ["Hamstrings"], icon: "🏋️", loadType: "external", instructions: "Upper back on a bench, one foot planted and the other extended. Drive the hips up through the planted heel, then lower." },
+  { id: "ex_cable_kickback", name: "Cable Glute Kickback", muscle: "Glutes", secondary: [], icon: "🏋️", loadType: "external", instructions: "Ankle cuff attached to the cable, kick the leg back and up while keeping the core braced, then return slowly." },
+  { id: "ex_cable_pull_through", name: "Cable Pull-Through", muscle: "Glutes", secondary: ["Hamstrings"], icon: "🏋️", loadType: "external", instructions: "Facing away from the low cable, hinge at the hips letting the rope pull back, then drive the hips forward to stand." },
+  { id: "ex_glute_bridge", name: "Glute Bridge", muscle: "Glutes", secondary: ["Hamstrings"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Lying on the back, knees bent, drive the hips up by squeezing the glutes, then lower under control." },
+  { id: "ex_single_glute_bridge", name: "Single-Leg Glute Bridge", muscle: "Glutes", secondary: ["Hamstrings"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "One foot on the floor, drive the hips up while the other leg stays extended, then lower with control." },
+  { id: "ex_frog_pump", name: "Frog Pump", muscle: "Glutes", secondary: [], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Lying on the back, soles of the feet together and knees dropped open, pulse the hips up squeezing the glutes." },
+  { id: "ex_donkey_kick", name: "Donkey Kick", muscle: "Glutes", secondary: [], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "On hands and knees, kick one leg up and back keeping the knee bent, squeezing the glute at the top." },
+  { id: "ex_curtsy_lunge", name: "Curtsy Lunge", muscle: "Glutes", secondary: ["Legs"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Step one leg diagonally behind the other into a curtsy position, lower the back knee, then drive back up." },
+  { id: "ex_fire_hydrant", name: "Fire Hydrant", muscle: "Glutes", secondary: [], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "On hands and knees, lift one bent knee out to the side keeping the hips square, then lower with control." },
+  { id: "ex_cable_hip_thrust", name: "Cable Hip Thrust", muscle: "Glutes", secondary: ["Hamstrings"], icon: "🏋️", loadType: "external", instructions: "Low cable attached at the hips, drive the hips forward against the resistance, then return under control." },
+  { id: "ex_banded_hip_thrust", name: "Banded Hip Thrust", muscle: "Glutes", secondary: ["Hamstrings"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Band looped over the hips and anchored, drive the hips up against the band tension, then lower." },
+  { id: "ex_bstance_hip_thrust", name: "B-Stance Hip Thrust", muscle: "Glutes", secondary: ["Hamstrings"], icon: "🏋️", loadType: "external", instructions: "One foot slightly forward for balance, drive through the rear heel to extend the hips, emphasizing one side." },
+  { id: "ex_reverse_hyper", name: "Reverse Hyperextension", muscle: "Glutes", secondary: ["Hamstrings", "Lower Back"], icon: "🏋️", loadType: "external", instructions: "Hips on the pad, swing the legs up behind you using the glutes and hamstrings, then lower with control." },
+  { id: "ex_clamshell", name: "Clamshell", muscle: "Glutes", secondary: ["Abductors"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Lying on the side with knees bent, open the top knee like a clamshell while keeping the feet together, then lower." },
+  { id: "ex_banded_lateral_walk", name: "Banded Lateral Walk", muscle: "Glutes", secondary: ["Abductors"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Band around the ankles or knees, take small side steps keeping tension on the band throughout." },
+  { id: "ex_weighted_glute_bridge", name: "Weighted Glute Bridge", muscle: "Glutes", secondary: ["Hamstrings"], icon: "🏋️", loadType: "external", instructions: "Lying on the back with a barbell or plate over the hips, drive the hips up, then lower under control." },
+
+  // --------------------------------- Shoulders ---------------------------------
+  { id: "ex_ohp", name: "Overhead Press", muscle: "Shoulders", secondary: ["Triceps", "Core"], icon: "🏋️", loadType: "external", instructions: "Bar at the shoulders, brace the core, press straight overhead until arms lock out." },
+  { id: "ex_push_press", name: "Push Press", muscle: "Shoulders", secondary: ["Triceps", "Legs", "Core"], icon: "🏋️", loadType: "external", instructions: "Bar at the shoulders, dip the knees slightly then drive up explosively, pressing the bar overhead to lockout." },
+  { id: "ex_arnold_press", name: "Arnold Press", muscle: "Shoulders", secondary: ["Triceps"], icon: "🏋️", loadType: "external", instructions: "Start with palms facing you, press the dumbbells overhead while rotating the palms to face forward." },
+  { id: "ex_seated_db_press", name: "Seated Dumbbell Shoulder Press", muscle: "Shoulders", secondary: ["Triceps"], icon: "🏋️", loadType: "external", instructions: "Seated with back support, press the dumbbells straight overhead until arms extend, then lower under control." },
+  { id: "ex_machine_shoulder_press", name: "Machine Shoulder Press", muscle: "Shoulders", secondary: ["Triceps"], icon: "🏋️", loadType: "external", instructions: "Sit tall, press the handles straight overhead until arms extend, then return under control." },
+  { id: "ex_landmine_lateral", name: "Landmine Lateral Raise", muscle: "Shoulders", secondary: [], icon: "🙆", loadType: "external", instructions: "Holding the end of a landmine bar with one arm, raise it out to the side to shoulder height, then lower slowly." },
+  { id: "ex_latraise", name: "Lateral Raise", muscle: "Shoulders", secondary: [], icon: "🙆", loadType: "external", instructions: "Raise dumbbells out to the sides to shoulder height with a slight elbow bend, then lower slowly." },
+  { id: "ex_cable_lateral_raise", name: "Cable Lateral Raise", muscle: "Shoulders", secondary: [], icon: "🙆", loadType: "external", instructions: "Cable set low at the side, raise the handle out and up to shoulder height, then lower under control." },
+  { id: "ex_front_raise", name: "Front Raise", muscle: "Shoulders", secondary: [], icon: "🙆", loadType: "external", instructions: "Raise a dumbbell or plate straight in front to shoulder height, then lower with control." },
+  { id: "ex_rear_delt_flye", name: "Rear Delt Flye", muscle: "Shoulders", secondary: ["Back"], icon: "🙆", loadType: "external", instructions: "Hinged forward, raise the dumbbells out to the sides squeezing the rear shoulders, then lower slowly." },
+  { id: "ex_reverse_pec_deck", name: "Reverse Pec Deck", muscle: "Shoulders", secondary: ["Back"], icon: "🙆", loadType: "external", instructions: "Chest against the pad, sweep the handles out and back squeezing the rear delts, then return under control." },
+  { id: "ex_upright_row", name: "Upright Row", muscle: "Shoulders", secondary: ["Traps"], icon: "🙆", loadType: "external", instructions: "Pull the bar straight up along the body to chest height, leading with the elbows, then lower under control." },
+  { id: "ex_facepull", name: "Face Pull", muscle: "Shoulders", secondary: ["Back", "Traps"], icon: "🙆", loadType: "external", instructions: "Pull the rope toward the face, elbows high, squeezing the rear shoulders at the end range." },
+  { id: "ex_cuban_press", name: "Cuban Press", muscle: "Shoulders", secondary: ["Triceps"], icon: "🙆", loadType: "external", instructions: "Curl the dumbbells up, rotate into an external-rotation position, then press overhead; reverse the sequence to lower." },
+  { id: "ex_pike_pushup", name: "Pike Push-Up", muscle: "Shoulders", secondary: ["Triceps", "Core"], icon: "🤸", loadType: "bodyweight", bwPercent: 75, instructions: "Hips high in an inverted-V position, lower the head toward the floor, then press back up." },
+  { id: "ex_handstand_pushup", name: "Handstand Push-Up", muscle: "Shoulders", secondary: ["Triceps", "Core"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Against a wall in a handstand, lower the head toward the floor, then press back up to full extension." },
+  { id: "ex_btn_press", name: "Behind-the-Neck Press", muscle: "Shoulders", secondary: ["Triceps"], icon: "🏋️", loadType: "external", instructions: "Bar racked behind the neck, press straight overhead until arms lock out, then lower with control." },
+  { id: "ex_bradford_press", name: "Bradford Press", muscle: "Shoulders", secondary: ["Triceps"], icon: "🏋️", loadType: "external", instructions: "Press the bar overhead and alternate tapping it in front of and behind the head without locking out." },
+  { id: "ex_bottoms_up_kb_press", name: "Bottoms-Up Kettlebell Press", muscle: "Shoulders", secondary: ["Triceps", "Forearms"], icon: "🏋️", loadType: "external", instructions: "Holding the kettlebell upside down by the handle, press overhead while gripping tightly to keep it balanced." },
+  { id: "ex_plate_front_raise", name: "Plate Front Raise", muscle: "Shoulders", secondary: [], icon: "🙆", loadType: "external", instructions: "Holding a weight plate with both hands, raise it straight in front to shoulder height, then lower with control." },
+  { id: "ex_y_raise", name: "Y-Raise", muscle: "Shoulders", secondary: ["Traps"], icon: "🙆", loadType: "external", instructions: "Lying incline or hinged forward, raise the arms up and out in a Y shape, then lower slowly." },
+  { id: "ex_egyptian_lateral", name: "Egyptian Lateral Raise", muscle: "Shoulders", secondary: [], icon: "🙆", loadType: "external", instructions: "Leaning away from a low cable, raise the handle out to the side with a leaned torso for extra range, then lower." },
+  { id: "ex_scott_press", name: "Scott Press", muscle: "Shoulders", secondary: ["Triceps"], icon: "🏋️", loadType: "external", instructions: "Press the bar overhead while leaning the torso back slightly, emphasizing the front delts through a longer range." },
+  { id: "ex_around_the_world", name: "Around the World", muscle: "Shoulders", secondary: ["Front Delts", "Rear Delts"], icon: "🙆", loadType: "external", instructions: "Holding light dumbbells, sweep the arms in a wide circle from the front to overhead and around, then reverse." },
+
+  // ----------------------------------- Arms ------------------------------------
+  { id: "ex_curl", name: "Barbell Curl", muscle: "Arms", secondary: ["Biceps"], icon: "💪", loadType: "external", instructions: "Elbows pinned to the sides, curl the bar up to the shoulders, then lower under control." },
+  { id: "ex_ez_bar_curl", name: "EZ-Bar Curl", muscle: "Arms", secondary: ["Biceps"], icon: "💪", loadType: "external", instructions: "Using the angled grip of an EZ-bar, curl up to the shoulders keeping elbows fixed, then lower under control." },
+  { id: "ex_db_curl", name: "Dumbbell Curl", muscle: "Arms", secondary: ["Biceps"], icon: "💪", loadType: "external", instructions: "Elbows pinned to the sides, curl the dumbbells up to the shoulders, then lower under control." },
+  { id: "ex_hammer", name: "Hammer Curl", muscle: "Arms", secondary: ["Forearms"], icon: "💪", loadType: "external", instructions: "Neutral grip dumbbells, curl straight up keeping the wrist fixed, then lower slowly." },
+  { id: "ex_preacher_curl", name: "Preacher Curl", muscle: "Arms", secondary: ["Biceps"], icon: "💪", loadType: "external", instructions: "Arms braced on the preacher pad, curl the bar up, then lower until the arms are nearly straight." },
+  { id: "ex_concentration_curl", name: "Concentration Curl", muscle: "Arms", secondary: ["Biceps"], icon: "💪", loadType: "external", instructions: "Elbow braced against the inner thigh, curl the dumbbell up with strict form, then lower slowly." },
+  { id: "ex_spider_curl", name: "Spider Curl", muscle: "Arms", secondary: ["Biceps"], icon: "💪", loadType: "external", instructions: "Chest braced face-down on an incline bench, curl the weight up letting the arms hang free, then lower under control." },
+  { id: "ex_cable_curl", name: "Cable Curl", muscle: "Arms", secondary: ["Biceps"], icon: "💪", loadType: "external", instructions: "Standing, curl the cable bar up toward the shoulders keeping elbows fixed, then lower under control." },
+  { id: "ex_pushdown", name: "Triceps Pushdown", muscle: "Arms", secondary: ["Triceps"], icon: "💪", loadType: "external", instructions: "Elbows fixed at the sides, push the bar down to full extension, then control the return." },
+  { id: "ex_skullcrusher", name: "Skull Crusher", muscle: "Arms", secondary: ["Triceps"], icon: "💪", loadType: "external", instructions: "Lying flat, lower the bar toward the forehead by bending the elbows, then extend back up." },
+  { id: "ex_overhead_ext", name: "Overhead Triceps Extension", muscle: "Arms", secondary: ["Triceps"], icon: "💪", loadType: "external", instructions: "Holding a dumbbell overhead with both hands, lower it behind the head, then extend the arms back up." },
+  { id: "ex_cable_overhead_ext", name: "Cable Overhead Triceps Extension", muscle: "Arms", secondary: ["Triceps"], icon: "💪", loadType: "external", instructions: "Facing away from a low cable, extend the rope overhead until the arms straighten, then lower with control." },
+  { id: "ex_jm_press", name: "JM Press", muscle: "Arms", secondary: ["Chest", "Triceps"], icon: "💪", loadType: "external", instructions: "A hybrid of a close-grip press and skull crusher — lower the bar toward the neck/chin, then press up to lockout." },
+  { id: "ex_closegrip_bench", name: "Close-Grip Bench Press", muscle: "Arms", secondary: ["Triceps", "Chest"], icon: "💪", loadType: "external", instructions: "Hands shoulder-width on the bar, lower to the chest keeping elbows tucked, then press up." },
+  { id: "ex_kickback", name: "Triceps Kickback", muscle: "Arms", secondary: ["Triceps"], icon: "💪", loadType: "external", instructions: "Hinged forward with the upper arm parallel to the floor, extend the forearm back, then return under control." },
+  { id: "ex_wrist_curl", name: "Wrist Curl", muscle: "Arms", secondary: ["Forearms"], icon: "💪", loadType: "external", instructions: "Forearms braced on a bench, curl the bar up using only the wrists, then lower to a full stretch." },
+  { id: "ex_reverse_wrist_curl", name: "Reverse Wrist Curl", muscle: "Arms", secondary: ["Forearms"], icon: "💪", loadType: "external", instructions: "Forearms braced on a bench, palms down, extend the wrists to lift the bar, then lower with control." },
+  { id: "ex_dip", name: "Triceps Dip", muscle: "Arms", secondary: ["Chest", "Front Delts"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "On parallel bars, lower the body by bending the elbows to ~90°, then press back up to full extension." },
+  { id: "ex_bench_dip", name: "Bench Dip", muscle: "Arms", secondary: ["Chest"], icon: "🤸", loadType: "bodyweight", bwPercent: 75, instructions: "Hands on a bench behind you, feet forward. Lower the hips toward the floor, then press back up." },
+  { id: "ex_preacher_curl_machine", name: "Preacher Curl Machine", muscle: "Arms", secondary: ["Biceps"], icon: "💪", loadType: "external", instructions: "Seated with arms on the pad, curl the handles up, then lower under control to a full stretch." },
+  { id: "ex_zottman_curl", name: "Zottman Curl", muscle: "Arms", secondary: ["Forearms"], icon: "💪", loadType: "external", instructions: "Curl the dumbbells up with palms facing up, then rotate the palms down and lower slowly for the eccentric." },
+  { id: "ex_reverse_curl", name: "Reverse Curl", muscle: "Arms", secondary: ["Forearms"], icon: "💪", loadType: "external", instructions: "Overhand grip on the bar, curl up keeping the wrists fixed, then lower under control." },
+  { id: "ex_drag_curl", name: "Drag Curl", muscle: "Arms", secondary: ["Biceps"], icon: "💪", loadType: "external", instructions: "Keeping the bar close to the body, drag it up along the torso by driving the elbows back, then lower." },
+  { id: "ex_incline_db_curl", name: "Incline Dumbbell Curl", muscle: "Arms", secondary: ["Biceps"], icon: "💪", loadType: "external", instructions: "Seated on an incline bench with arms hanging back, curl the dumbbells up, then lower to a deep stretch." },
+  { id: "ex_crossbody_hammer", name: "Cross-Body Hammer Curl", muscle: "Arms", secondary: ["Forearms"], icon: "💪", loadType: "external", instructions: "Neutral grip dumbbells, curl one across the body toward the opposite shoulder, then lower and alternate." },
+  { id: "ex_rope_pushdown", name: "Rope Triceps Pushdown", muscle: "Arms", secondary: ["Triceps"], icon: "💪", loadType: "external", instructions: "Elbows fixed at the sides, push the rope down and apart at the bottom, then control the return." },
+  { id: "ex_tate_press", name: "Tate Press", muscle: "Arms", secondary: ["Triceps"], icon: "💪", loadType: "external", instructions: "Lying flat, lower dumbbells with elbows flared out toward the chest, then press back up to lockout." },
+  { id: "ex_wrist_roller", name: "Wrist Roller", muscle: "Arms", secondary: ["Forearms", "Grip"], icon: "💪", loadType: "external", instructions: "Roll the weight up and down on a suspended cord by rotating the wrists, working the forearms." },
+
+  // ----------------------------------- Core ------------------------------------
+  { id: "ex_cable_crunch", name: "Cable Crunch", muscle: "Core", secondary: [], icon: "🏋️", loadType: "external", instructions: "Kneel below the cable, crunch the elbows toward the hips by flexing the spine, not pulling with the arms." },
+  { id: "ex_weighted_situp", name: "Weighted Sit-Up", muscle: "Core", secondary: [], icon: "🏋️", loadType: "external", instructions: "Holding a plate to the chest, curl the torso up off the floor, then lower with control." },
+  { id: "ex_weighted_leg_raise", name: "Hanging Weighted Leg Raise", muscle: "Core", secondary: ["Grip"], icon: "🏋️", loadType: "external", instructions: "Hang from the bar with a dumbbell held between the feet, raise the legs to hip height, then lower under control." },
+  { id: "ex_cable_woodchopper", name: "Cable Woodchopper", muscle: "Core", secondary: ["Shoulders"], icon: "🏋️", loadType: "external", instructions: "Cable set high, rotate the torso and pull the handle diagonally down across the body, then reverse with control." },
+  { id: "ex_pallof_press", name: "Pallof Press", muscle: "Core", secondary: [], icon: "🏋️", loadType: "external", instructions: "Standing side-on to a cable, press the handle straight out from the chest resisting rotation, then return." },
+  { id: "ex_plank", name: "Plank", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Forearms and toes on the floor, body in a straight line, brace the core and hold for time." },
+  { id: "ex_side_plank", name: "Side Plank", muscle: "Core", secondary: ["Glutes"], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Balanced on one forearm and the side of the foot, hips lifted in a straight line, hold for time." },
+  { id: "ex_hanging_leg", name: "Hanging Leg Raise", muscle: "Core", secondary: ["Grip"], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Hang from the bar, raise the legs to hip height or higher while keeping the swing controlled." },
+  { id: "ex_toes_to_bar", name: "Toes to Bar", muscle: "Core", secondary: ["Grip", "Back"], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Hanging from the bar, use momentum and core control to bring the toes up to touch the bar, then lower with control." },
+  { id: "ex_situp", name: "Sit-Up", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Knees bent, feet anchored, curl the torso all the way up, then lower with control." },
+  { id: "ex_bicycle_crunch", name: "Bicycle Crunch", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Lying on the back, alternate bringing elbow to opposite knee in a pedaling motion." },
+  { id: "ex_russian_twist", name: "Russian Twist", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Seated, lean back slightly and rotate the torso side to side, tapping the floor on each side." },
+  { id: "ex_ab_wheel", name: "Ab Wheel Rollout", muscle: "Core", secondary: ["Shoulders", "Back"], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Kneeling, roll the wheel forward keeping the core braced, then pull back to the start." },
+  { id: "ex_vup", name: "V-Up", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Lying flat, simultaneously raise the legs and torso to touch hands to toes, forming a V, then lower under control." },
+  { id: "ex_leg_raise", name: "Lying Leg Raise", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Lying on the back, raise straight legs to vertical while keeping the lower back pressed down, then lower slowly." },
+  { id: "ex_dead_bug", name: "Dead Bug", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Lying on the back with arms and knees up, slowly extend opposite arm and leg while keeping the low back flat, then switch sides." },
+  { id: "ex_hollow_hold", name: "Hollow Body Hold", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Lying on the back, press the low back down and lift the shoulders and legs off the floor, holding a slight banana shape." },
+  { id: "ex_reverse_crunch", name: "Reverse Crunch", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Lying on the back, curl the hips up off the floor bringing the knees toward the chest, then lower slowly." },
+  { id: "ex_cable_reverse_crunch", name: "Cable Reverse Crunch", muscle: "Core", secondary: [], icon: "🏋️", loadType: "external", instructions: "Ankle cable attached, curl the hips up toward the chest against the resistance, then lower with control." },
+  { id: "ex_flutter_kicks", name: "Flutter Kicks", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Lying on the back with legs extended, alternate small up-and-down kicks while keeping the low back pressed down." },
+  { id: "ex_scissor_kicks", name: "Scissor Kicks", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Lying on the back, cross the extended legs over each other in a scissoring motion, keeping the low back flat." },
+  { id: "ex_windshield_wipers", name: "Windshield Wipers", muscle: "Core", secondary: ["Obliques"], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Hanging or lying with legs raised, rotate the legs side to side like a windshield wiper, keeping the core braced." },
+  { id: "ex_lsit", name: "L-Sit", muscle: "Core", secondary: [], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Supported on the hands or parallel bars, hold the legs extended straight out in front, forming an L shape." },
+  { id: "ex_copenhagen_plank", name: "Copenhagen Plank", muscle: "Core", secondary: ["Adductors"], icon: "🧘", loadType: "bodyweight", bwPercent: 100, instructions: "Top leg supported on a bench, hold a side plank position using the inner thigh of the top leg for support." },
+  { id: "ex_suitcase_carry", name: "Suitcase Carry", muscle: "Core", secondary: ["Grip", "Obliques"], icon: "🏋️", loadType: "external", instructions: "Holding a heavy weight in one hand, walk with tall posture resisting the pull to one side, then switch hands." },
+
+  // ---------------------------------- Cardio ------------------------------------
+  { id: "ex_run", name: "Tempo Run", muscle: "Cardio", secondary: ["Legs"], icon: "🏃", loadType: "cardio", instructions: "Sustain a comfortably-hard pace for the target distance or time, focusing on steady breathing." },
+  { id: "ex_sprint", name: "Sprint Intervals", muscle: "Cardio", secondary: ["Legs"], icon: "🏃", loadType: "cardio", instructions: "Alternate maximal-effort sprints with full recovery walks for the prescribed number of rounds." },
+  { id: "ex_incline_walk", name: "Incline Treadmill Walk", muscle: "Cardio", secondary: ["Legs", "Glutes"], icon: "🏃", loadType: "cardio", instructions: "Set a steep incline and walk at a brisk, sustainable pace for the target time, holding the rails only if needed." },
+  { id: "ex_rowerg", name: "Rowing Erg", muscle: "Cardio", secondary: ["Back", "Legs"], icon: "🚣", loadType: "cardio", instructions: "Drive with the legs first, then lean back and pull the handle to the ribs, reversing smoothly." },
+  { id: "ex_ski_erg", name: "Ski Erg", muscle: "Cardio", secondary: ["Back", "Core"], icon: "🎿", loadType: "cardio", instructions: "Hinge at the hips and pull both handles down together using the lats and core, then reset with control." },
+  { id: "ex_bike", name: "Bike Intervals", muscle: "Cardio", secondary: ["Legs"], icon: "🚴", loadType: "cardio", instructions: "Alternate hard efforts with easy recovery spins for the prescribed number of rounds." },
+  { id: "ex_jumprope", name: "Jump Rope", muscle: "Cardio", secondary: ["Calves"], icon: "🪢", loadType: "cardio", instructions: "Keep a light, steady bounce and consistent rope turnover for the target time or reps." },
+  { id: "ex_stairclimber", name: "Stair Climber", muscle: "Cardio", secondary: ["Legs", "Glutes"], icon: "🪜", loadType: "cardio", instructions: "Maintain an upright posture and steady step cadence for the target duration." },
+  { id: "ex_elliptical", name: "Elliptical", muscle: "Cardio", secondary: ["Legs"], icon: "🚴", loadType: "cardio", instructions: "Maintain a smooth, steady stride and push through both the arms and legs for the target duration." },
+  { id: "ex_assault_bike", name: "Assault Bike", muscle: "Cardio", secondary: ["Legs", "Arms"], icon: "🚴", loadType: "cardio", instructions: "Drive both the arms and legs together at a hard, sustainable pace for the prescribed intervals." },
+  { id: "ex_battle_ropes", name: "Battle Ropes", muscle: "Cardio", secondary: ["Shoulders", "Core"], icon: "🪢", loadType: "cardio", instructions: "Alternate slamming the ropes in waves, keeping the core braced, for the target time." },
+  { id: "ex_swimming", name: "Swimming", muscle: "Cardio", secondary: ["Back", "Shoulders"], icon: "🏊", loadType: "cardio", instructions: "Sustain steady, efficient strokes and breathing rhythm for the target distance or time." },
+  { id: "ex_shadow_boxing", name: "Shadow Boxing", muscle: "Cardio", secondary: ["Arms", "Core"], icon: "🥊", loadType: "cardio", instructions: "Throw combinations at a steady pace, staying light on the feet, for the target rounds or time." },
+  { id: "ex_mountain_climber", name: "Mountain Climber", muscle: "Cardio", secondary: ["Core"], icon: "🤸", loadType: "cardio", instructions: "In a plank position, drive the knees toward the chest rapidly, alternating legs." },
+  { id: "ex_burpee", name: "Burpee", muscle: "Cardio", secondary: ["Chest", "Legs", "Core"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Drop into a squat, kick back into a plank, perform a push-up, then jump feet in and explode upward." },
+  { id: "ex_treadmill_run", name: "Treadmill Run (Steady State)", muscle: "Cardio", secondary: ["Legs"], icon: "🏃", loadType: "cardio", instructions: "Maintain a steady, conversational pace on the treadmill for the target time or distance." },
+  { id: "ex_stationary_bike", name: "Stationary Bike", muscle: "Cardio", secondary: ["Legs"], icon: "🚴", loadType: "cardio", instructions: "Maintain a steady cadence and resistance for the target time, adjusting effort as prescribed." },
+  { id: "ex_versaclimber", name: "Versaclimber", muscle: "Cardio", secondary: ["Legs", "Back"], icon: "🪜", loadType: "cardio", instructions: "Drive with alternating arms and legs in a climbing motion, keeping a steady rhythm for the target time." },
+  { id: "ex_sled_conditioning", name: "Sled Conditioning", muscle: "Cardio", secondary: ["Legs"], icon: "🏃", loadType: "cardio", instructions: "Push or drag a loaded sled for short, hard efforts with brief recovery between rounds." },
+  { id: "ex_high_knees", name: "High Knees", muscle: "Cardio", secondary: ["Legs", "Core"], icon: "🏃", loadType: "cardio", instructions: "Drive the knees up toward the chest rapidly while pumping the arms, staying light on the feet." },
+  { id: "ex_butt_kicks", name: "Butt Kicks", muscle: "Cardio", secondary: ["Hamstrings"], icon: "🏃", loadType: "cardio", instructions: "Jog in place kicking the heels up toward the glutes rapidly, staying light and quick." },
+
+  // -------------------------------- Full Body -----------------------------------
+  { id: "ex_clean_jerk", name: "Clean and Jerk", muscle: "Full Body", secondary: ["Legs", "Shoulders", "Back"], icon: "🏋️", loadType: "external", instructions: "Pull the bar explosively from the floor to the shoulders, then dip and drive it overhead to lock out." },
+  { id: "ex_power_clean", name: "Power Clean", muscle: "Full Body", secondary: ["Legs", "Back"], icon: "🏋️", loadType: "external", instructions: "Pull the bar explosively from the floor, extending the hips fully, then catch it on the shoulders in a quarter squat." },
+  { id: "ex_snatch", name: "Snatch", muscle: "Full Body", secondary: ["Legs", "Shoulders", "Back"], icon: "🏋️", loadType: "external", instructions: "Pull the bar explosively from the floor to overhead in one motion, catching it in a full squat." },
+  { id: "ex_kb_swing", name: "Kettlebell Swing", muscle: "Full Body", secondary: ["Glutes", "Hamstrings", "Core"], icon: "🏋️", loadType: "external", instructions: "Hinge at the hips and swing the kettlebell up to chest height using hip drive, not the arms." },
+  { id: "ex_thruster", name: "Thruster", muscle: "Full Body", secondary: ["Legs", "Shoulders"], icon: "🏋️", loadType: "external", instructions: "Front squat the bar down, then drive up and press it overhead in one fluid motion." },
+  { id: "ex_wall_ball", name: "Wall Ball Shot", muscle: "Full Body", secondary: ["Legs", "Shoulders"], icon: "🏋️", loadType: "external", instructions: "Squat down holding the ball at the chest, then drive up and throw it to a target on the wall, catching it on the way down." },
+  { id: "ex_farmers_carry", name: "Farmer's Carry", muscle: "Full Body", secondary: ["Grip", "Core", "Traps"], icon: "🏋️", loadType: "external", instructions: "Holding a heavy weight in each hand, walk with tall posture and braced core for the target distance." },
+  { id: "ex_devils_press", name: "Devil's Press", muscle: "Full Body", secondary: ["Shoulders", "Legs", "Core"], icon: "🏋️", loadType: "external", instructions: "From a burpee with dumbbells in hand, explode up and swing the dumbbells overhead to full lockout." },
+  { id: "ex_turkish_getup", name: "Turkish Get-Up", muscle: "Full Body", secondary: ["Core", "Shoulders"], icon: "🏋️", loadType: "external", instructions: "Holding a weight overhead, move from lying to standing through a controlled sequence, then reverse back down." },
+  { id: "ex_man_maker", name: "Man Maker", muscle: "Full Body", secondary: ["Back", "Shoulders", "Legs"], icon: "🏋️", loadType: "external", instructions: "From a plank with dumbbells, row each arm, perform a push-up, then jump the feet in and clean-and-press both dumbbells overhead." },
+  { id: "ex_bear_crawl", name: "Bear Crawl", muscle: "Full Body", secondary: ["Core", "Shoulders"], icon: "🤸", loadType: "bodyweight", bwPercent: 100, instructions: "Hands and feet on the floor, knees hovering, crawl forward moving opposite hand and foot together." },
+  { id: "ex_barbell_complex", name: "Barbell Complex", muscle: "Full Body", secondary: ["Legs", "Back", "Shoulders"], icon: "🏋️", loadType: "external", instructions: "String several barbell movements together without setting the bar down, moving through the full body under fatigue." },
+  { id: "ex_db_snatch", name: "Dumbbell Snatch", muscle: "Full Body", secondary: ["Shoulders", "Legs", "Back"], icon: "🏋️", loadType: "external", instructions: "Hike the dumbbell back between the legs, then pull it explosively overhead to lockout in one motion." },
+  { id: "ex_sandbag_carry", name: "Sandbag Carry", muscle: "Full Body", secondary: ["Core", "Grip"], icon: "🏋️", loadType: "external", instructions: "Holding a sandbag against the chest or on a shoulder, walk with tall posture for the target distance." },
+  { id: "ex_sled_drag_harness", name: "Sled Drag (Harness)", muscle: "Full Body", secondary: ["Legs", "Core"], icon: "🏋️", loadType: "external", instructions: "Attached via a harness, drag the loaded sled forward with steady, driving steps." },
+  { id: "ex_tire_flip", name: "Tire Flip", muscle: "Full Body", secondary: ["Legs", "Back", "Chest"], icon: "🏋️", loadType: "external", instructions: "Hinge down, drive through the legs and hips to flip the tire forward, then reset and repeat." },
+];
+const EX_BY_ID = Object.fromEntries(EXERCISE_LIBRARY.map((e) => [e.id, e]));
+
+// ---- Custom exercises (user-added) live in shared state, layered on top of the
+// built-in library at render time. See syncExerciseIndex()/getEx() below. ----
+let CUSTOM_EX_INDEX = {};
+function syncExerciseIndex(customExercises) {
+  CUSTOM_EX_INDEX = customExercises || {};
+}
+function getEx(exerciseId) {
+  return CUSTOM_EX_INDEX[exerciseId] || EX_BY_ID[exerciseId];
+}
+function allExercises(customExercises) {
+  return [...EXERCISE_LIBRARY, ...Object.values(customExercises || {})];
+}
+function newCustomExercise({ name, muscle, secondary, icon, loadType, bwPercent, instructions, createdBy }) {
+  return {
+    id: uid("cex"),
+    name: name.trim(),
+    muscle: muscle || "Chest",
+    secondary: Array.isArray(secondary) ? secondary : [],
+    icon: icon || "⭐",
+    loadType: loadType || "external",
+    bwPercent: loadType === "bodyweight" ? (Number(bwPercent) || 100) : undefined,
+    instructions: (instructions || "").trim() || "Custom exercise — added by you. Tap into it any time to add form notes.",
+    custom: true,
+    createdBy: createdBy || null,
+  };
+}
+
+// ---- Bodyweight load estimation --------------------------------------------
+// There's no scale under a push-up, so we estimate the load the same way exercise
+// science commonly does: total load ≈ (member's bodyweight × the fraction of it
+// that movement pattern puts through the working muscles) + any extra weight the
+// person deliberately adds (a weighted vest, a dip belt, a dumbbell between the
+// feet, etc). The percentages above are widely-cited coaching estimates, not a
+// lab measurement for any one body — they exist so bodyweight work still shows up
+// on the same volume/PR/progress charts as barbell work, not to be exact to the
+// gram. Members can always tune their bodyweight in Profile for a better estimate.
+const DEFAULT_BODYWEIGHT_KG = 70;
+const DEFAULT_HEIGHT_CM = 170;
+const DEFAULT_AGE = 25;
+function computeBodyweightLoad(ex, addedWeight, bodyweightKg) {
+  const bw = Number(bodyweightKg) || DEFAULT_BODYWEIGHT_KG;
+  const pct = (ex && Number(ex.bwPercent)) || 100;
+  return Math.round(bw * (pct / 100) + (Number(addedWeight) || 0));
+}
+
+const WORKOUT_QUOTES = [
+  "Let's become stronger than yesterday.",
+  "Today's session is another step toward your goal.",
+  "Small improvements every day create extraordinary results.",
+  "Discipline is choosing between what you want now and what you want most.",
+  "The only bad workout is the one that didn't happen.",
+  "Show up. That's most of the battle, every single time.",
+  "Your future self is already thanking you for this one.",
+  "Progress, not perfection — one set at a time.",
+  "Consistency beats intensity when intensity isn't sustainable.",
+  "You don't have to be great to start, just start.",
+  "Every rep today is a deposit into tomorrow's strength.",
+  "Make today's version of you proud.",
+];
+const REST_QUOTES = [
+  "Recovery is where the growth actually happens.",
+  "Rest hard so you can train hard.",
+  "A quiet day today builds the strong day tomorrow.",
+  "Muscles grow when you sleep and rest, not just when you lift.",
+  "Taking today off is still part of the plan.",
+  "Stretch, hydrate, breathe — this counts too.",
+];
+const RECOVERY_TIPS = [
+  "Aim for 7-9 hours of sleep tonight — it's the biggest recovery lever you have.",
+  "Sip water throughout the day; even mild dehydration slows recovery.",
+  "A short walk or light stretch keeps blood flowing without adding fatigue.",
+  "Protein spread across meals today helps repair yesterday's work.",
+  "Foam rolling or a gentle mobility flow can ease tomorrow's session.",
+];
+
+const ACHIEVEMENTS = [
+  // ---- First steps ----
+  { id: "ach_first", name: "First Rep", desc: "Complete your first workout", icon: "🎉", check: (s) => s.totalWorkouts >= 1 },
+  { id: "ach_first_pr", name: "New Record", desc: "Set your first personal record", icon: "🥇", check: (s) => s.prCount >= 1 },
+  { id: "ach_first_note", name: "Note Taker", desc: "Leave notes on 3 different exercises", icon: "📝", check: (s) => Object.keys(s.exerciseNotes || {}).length >= 3 },
+  { id: "ach_first_photo", name: "Say Cheese", desc: "Upload your first progress photo", icon: "📸", check: (s) => (s.photoCount || 0) >= 1 },
+
+  // ---- Streaks ----
+  { id: "ach_streak3", name: "Getting Started", desc: "Reach a 3-day streak", icon: "🌱", check: (s) => s.longestStreak >= 3 },
+  { id: "ach_streak7", name: "On Fire", desc: "Reach a 7-day streak", icon: "🔥", check: (s) => s.longestStreak >= 7 },
+  { id: "ach_streak14", name: "Two Weeks Strong", desc: "Reach a 14-day streak", icon: "🗓️", check: (s) => s.longestStreak >= 14 },
+  { id: "ach_streak30", name: "Unstoppable", desc: "Reach a 30-day streak", icon: "⚡", check: (s) => s.longestStreak >= 30 },
+  { id: "ach_streak60", name: "Iron Habit", desc: "Reach a 60-day streak", icon: "🧲", check: (s) => s.longestStreak >= 60 },
+  { id: "ach_streak100", name: "Legendary Streak", desc: "Reach a 100-day streak", icon: "🐉", check: (s) => s.longestStreak >= 100 },
+  { id: "ach_streak365", name: "Full Year", desc: "Reach a 365-day streak", icon: "🎇", check: (s) => s.longestStreak >= 365 },
+  { id: "ach_weekend", name: "Weekend Warrior", desc: "Log a workout on both a Saturday and a Sunday", icon: "🏖️", check: (s) => {
+    const days = new Set(Object.keys(s.worklogs || {}).filter((iso) => s.worklogs[iso]?.completedAt).map((iso) => dayKeyForISO(iso)));
+    return days.has("sat") && days.has("sun");
+  } },
+  { id: "ach_alldays", name: "Consistency King", desc: "Log a workout on every day of the week at least once", icon: "👑", check: (s) => {
+    const days = new Set(Object.keys(s.worklogs || {}).filter((iso) => s.worklogs[iso]?.completedAt).map((iso) => dayKeyForISO(iso)));
+    return DAY_ORDER.every((d) => days.has(d));
+  } },
+
+  // ---- Workout count ----
+  { id: "ach_workouts10", name: "Getting Reps In", desc: "10 workouts completed", icon: "🔟", check: (s) => s.totalWorkouts >= 10 },
+  { id: "ach_workouts25", name: "Regular", desc: "25 workouts completed", icon: "📅", check: (s) => s.totalWorkouts >= 25 },
+  { id: "ach_workouts50", name: "Dedicated", desc: "50 workouts completed", icon: "🥋", check: (s) => s.totalWorkouts >= 50 },
+  { id: "ach_workouts100", name: "Centurion", desc: "100 workouts completed", icon: "💯", check: (s) => s.totalWorkouts >= 100 },
+  { id: "ach_workouts250", name: "Veteran", desc: "250 workouts completed", icon: "🎖️", check: (s) => s.totalWorkouts >= 250 },
+  { id: "ach_workouts500", name: "Iron Legend", desc: "500 workouts completed", icon: "🏛️", check: (s) => s.totalWorkouts >= 500 },
+  { id: "ach_workouts1000", name: "Gym Immortal", desc: "1,000 workouts completed", icon: "🛡️", check: (s) => s.totalWorkouts >= 1000 },
+
+  // ---- Volume ----
+  { id: "ach_volume1k", name: "First Ton", desc: "1,000 kg total volume lifted", icon: "🪨", check: (s) => s.totalVolume >= 1000 },
+  { id: "ach_volume10k", name: "Heavy Lifter", desc: "10,000 kg total volume", icon: "💪", check: (s) => s.totalVolume >= 10000 },
+  { id: "ach_volume50k", name: "Iron Will", desc: "50,000 kg total volume", icon: "🦾", check: (s) => s.totalVolume >= 50000 },
+  { id: "ach_volume100k", name: "Six Figures", desc: "100,000 kg total volume", icon: "💎", check: (s) => s.totalVolume >= 100000 },
+  { id: "ach_volume250k", name: "Quarter Million", desc: "250,000 kg total volume", icon: "🚂", check: (s) => s.totalVolume >= 250000 },
+  { id: "ach_volume500k", name: "Half Million Club", desc: "500,000 kg total volume", icon: "🛳️", check: (s) => s.totalVolume >= 500000 },
+  { id: "ach_volume1m", name: "Million Kilogram Club", desc: "1,000,000 kg total volume", icon: "🚀", check: (s) => s.totalVolume >= 1000000 },
+
+  // ---- Level / XP ----
+  { id: "ach_level5", name: "Rising Star", desc: "Reach level 5", icon: "⭐", check: (s) => s.level >= 5 },
+  { id: "ach_level10", name: "Elite", desc: "Reach level 10", icon: "🏆", check: (s) => s.level >= 10 },
+  { id: "ach_level20", name: "Champion", desc: "Reach level 20", icon: "👑", check: (s) => s.level >= 20 },
+  { id: "ach_level30", name: "Legend", desc: "Reach level 30", icon: "🌟", check: (s) => s.level >= 30 },
+  { id: "ach_level50", name: "Mythic", desc: "Reach level 50", icon: "🔮", check: (s) => s.level >= 50 },
+
+  // ---- Personal records ----
+  { id: "ach_pr5", name: "Record Breaker", desc: "Set 5 personal records", icon: "📈", check: (s) => s.prCount >= 5 },
+  { id: "ach_pr20", name: "PR Machine", desc: "Set 20 personal records", icon: "⚙️", check: (s) => s.prCount >= 20 },
+  { id: "ach_pr50", name: "Record Hunter", desc: "Set 50 personal records", icon: "🎯", check: (s) => s.prCount >= 50 },
+
+  // ---- Exercise variety ----
+  { id: "ach_variety10", name: "Well Rounded", desc: "Log 10 different exercises", icon: "🧩", check: (s) => Object.keys(s.history || {}).filter((k) => (s.history[k] || []).length > 0).length >= 10 },
+  { id: "ach_variety25", name: "Explorer", desc: "Log 25 different exercises", icon: "🗺️", check: (s) => Object.keys(s.history || {}).filter((k) => (s.history[k] || []).length > 0).length >= 25 },
+  { id: "ach_variety50", name: "Master of All", desc: "Log 50 different exercises", icon: "🎓", check: (s) => Object.keys(s.history || {}).filter((k) => (s.history[k] || []).length > 0).length >= 50 },
+
+  // ---- Milestone lifts ----
+  { id: "ach_bench_bw", name: "Bodyweight Bench", desc: "Bench press your own bodyweight", icon: "🏋️", check: (s) => (s.history?.ex_bench || []).some((h) => h.weight >= (s.bodyweightKg || DEFAULT_BODYWEIGHT_KG)) },
+  { id: "ach_bench_100", name: "Century Bench", desc: "Bench press 100 kg", icon: "💥", check: (s) => (s.history?.ex_bench || []).some((h) => h.weight >= 100) },
+  { id: "ach_squat_2bw", name: "Double Bodyweight Squat", desc: "Squat twice your bodyweight", icon: "🦵", check: (s) => (s.history?.ex_squat || []).some((h) => h.weight >= 2 * (s.bodyweightKg || DEFAULT_BODYWEIGHT_KG)) },
+  { id: "ach_squat_140", name: "Squat 140", desc: "Squat 140 kg", icon: "🔩", check: (s) => (s.history?.ex_squat || []).some((h) => h.weight >= 140) },
+  { id: "ach_deadlift_2bw", name: "Deadlift Beast", desc: "Deadlift twice your bodyweight", icon: "🐘", check: (s) => (s.history?.ex_deadlift || []).some((h) => h.weight >= 2 * (s.bodyweightKg || DEFAULT_BODYWEIGHT_KG)) },
+  { id: "ach_deadlift_180", name: "Deadlift 180", desc: "Deadlift 180 kg", icon: "⚓", check: (s) => (s.history?.ex_deadlift || []).some((h) => h.weight >= 180) },
+  { id: "ach_pullup_10", name: "Pull-Up Pro", desc: "Complete 10 pull-ups in a single set", icon: "🧗", check: (s) => (s.history?.ex_pullup || []).some((h) => h.reps >= 10) },
+  { id: "ach_pushup_50", name: "Push-Up Machine", desc: "Complete 50 push-ups in a single set", icon: "🤸", check: (s) => (s.history?.ex_pushup || []).some((h) => h.reps >= 50) },
+];
+
+/* -------------------------------- Utils --------------------------------- */
+function uid(prefix) {
+  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+export function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function isoToDate(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+export function addDaysISO(iso, delta) {
+  const d = isoToDate(iso);
+  d.setDate(d.getDate() + delta);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+export function dayKeyForISO(iso) {
+  return DAY_FROM_JS[isoToDate(iso).getDay()];
+}
+function todayDayKey() {
+  return dayKeyForISO(todayISO());
+}
+function formatNiceDate(iso) {
+  return isoToDate(iso).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+}
+function formatShortDate(iso) {
+  return isoToDate(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+function pickDaily(seedName, list) {
+  const idx = hashStr(seedName + todayISO()) % list.length;
+  return list[idx];
+}
+function levelInfo(xp) {
+  const XP_PER_LEVEL = 300;
+  const level = Math.floor(xp / XP_PER_LEVEL) + 1;
+  const into = xp % XP_PER_LEVEL;
+  return { level, into, need: XP_PER_LEVEL, pct: Math.round((into / XP_PER_LEVEL) * 100) };
+}
+function volumeOf(sets, reps, weight) {
+  return Math.round((Number(sets) || 0) * (Number(reps) || 0) * (Number(weight) || 0));
+}
+function clamp(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
+}
+export function emptyWeek() {
+  const days = {};
+  DAY_ORDER.forEach((d) => (days[d] = { type: "rest", exercises: [] }));
+  return days;
+}
+export function newMember({ id, name, role, status, avatarUrl }) {
+  return {
+    id: id || uid("mem"),
+    name,
+    avatar: AVATAR_SWATCHES[hashStr(name) % AVATAR_SWATCHES.length],
+    avatarUrl: avatarUrl || null,
+    role,
+    status,
+    goal: "hybrid",
+    bodyweightKg: DEFAULT_BODYWEIGHT_KG,
+    heightCm: DEFAULT_HEIGHT_CM,
+    age: DEFAULT_AGE,
+    joinedAt: todayISO(),
+    activeProgramId: null,
+    xp: 0,
+    streak: 0,
+    longestStreak: 0,
+    lastActiveDate: null,
+    totalVolume: 0,
+    totalWorkouts: 0,
+    prCount: 0,
+    unlocked: [],
+    history: {},      // { [exerciseId]: [{date, sets, reps, weight, volume}] }
+    worklogs: {},      // { [iso]: { restDay:bool, exercises: {[exerciseId]:{sets,reps,weight,done}}, completedAt } }
+    exerciseNotes: {}, // { [exerciseId]: text }
+  };
+}
+function recomputeAchievements(m) {
+  const unlockedNow = new Set(m.unlocked || []);
+  ACHIEVEMENTS.forEach((a) => {
+    if (a.check(m)) unlockedNow.add(a.id);
+  });
+  return Array.from(unlockedNow);
+}
+export function applyStreak(m, iso, program) {
+  if (m.lastActiveDate === iso) return m; // already counted today
+  let streakBroken = true;
+  if (m.lastActiveDate && program) {
+    streakBroken = false;
+    // Walk every day strictly between the last active date and today. The streak
+    // only breaks if one of those in-between days was a scheduled WORKOUT day that
+    // went unlogged — scheduled rest days in between are expected and don't break it.
+    let cursor = addDaysISO(m.lastActiveDate, 1);
+    let guard = 0;
+    while (cursor < iso && guard < 3660) {
+      const sched = program.days?.[dayKeyForISO(cursor)];
+      if (!sched || sched.type === "workout") { streakBroken = true; break; }
+      cursor = addDaysISO(cursor, 1);
+      guard++;
+    }
+  }
+  const streak = streakBroken ? 1 : (m.streak || 0) + 1;
+  const longest = Math.max(m.longestStreak || 0, streak);
+  return { ...m, streak, longestStreak: longest, lastActiveDate: iso };
+}
+
+/* ---------------------------- Storage helpers ---------------------------- */
+const STATE_KEY = "prism_state_v1";
+function normalizeState(s) {
+  if (!s) return s;
+  const members = Object.fromEntries(
+    Object.entries(s.members || {}).map(([id, m]) => [id, { bodyweightKg: DEFAULT_BODYWEIGHT_KG, heightCm: DEFAULT_HEIGHT_CM, age: DEFAULT_AGE, avatarUrl: null, ...m }])
+  );
+  return { ...s, members, customExercises: s.customExercises || {}, programs: s.programs || {} };
+}
+// Shared app state lives in a single JSONB row (id=1) in the `app_state` table.
+// Per-user photo galleries live one-row-per-user in `user_photos`, keyed by the
+// Supabase auth user id. RLS policies (see supabase/schema.sql) restrict writes
+// to authenticated users.
+async function storageLoadState() {
+  try {
+    const { data, error } = await supabase
+      .from("app_state")
+      .select("data")
+      .eq("id", 1)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? normalizeState(data.data) : null;
+  } catch (e) {
+    console.error("storageLoadState failed", e);
+    return null;
+  }
+}
+async function storageSaveState(state) {
+  try {
+    const { error } = await supabase
+      .from("app_state")
+      .upsert({ id: 1, data: state, updated_at: new Date().toISOString() });
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error("storageSaveState failed", e);
+    return false;
+  }
+}
+async function storageLoadPhotos(userId) {
+  try {
+    const { data, error } = await supabase
+      .from("user_photos")
+      .select("data")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? data.data : [];
+  } catch (e) {
+    console.error("storageLoadPhotos failed", e);
+    return [];
+  }
+}
+async function storageSavePhotos(userId, photos) {
+  try {
+    const { error } = await supabase
+      .from("user_photos")
+      .upsert({ user_id: userId, data: photos, updated_at: new Date().toISOString() });
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error("storageSavePhotos failed", e);
+    return false;
+  }
+}
+
+/* ---------------------------- Initial app state --------------------------- */
+// IMPORTANT: this must start with zero members. The bootstrap rule ("the very
+// first person to sign in becomes admin") only works if the store is truly
+// empty on first run — pre-seeding fake members here would permanently steal
+// the admin slot from whoever actually deploys this for their crew.
+function emptyAppState() {
+  return { members: {}, programs: {}, customExercises: {}, createdAt: todayISO() };
+}
+
+
+/* ============================== Primitives =============================== */
+
+function Card({ children, className = "", glow = false }) {
+  return (
+    <div className={`rounded-3xl bg-white/[0.05] border border-white/10 backdrop-blur-xl ${glow ? "shadow-lg shadow-pink-400/10" : ""} ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function Chip({ children, active, onClick, className = "" }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 border ${
+        active
+          ? `${GRAD} text-white border-transparent shadow-md shadow-pink-400/30 scale-105`
+          : "bg-white/5 text-slate-300 border-white/10 hover:bg-white/10 hover:border-white/20"
+      } ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function GradientButton({ children, onClick, className = "", type = "button", disabled, warm = false, size = "md" }) {
+  const pad = size === "lg" ? "px-6 py-3.5 text-base" : size === "sm" ? "px-3 py-1.5 text-sm" : "px-4 py-2.5 text-sm";
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      className={`${warm ? GRAD_WARM : GRAD} ${pad} rounded-2xl font-semibold text-white shadow-lg shadow-pink-400/20 hover:shadow-xl hover:shadow-pink-400/30 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 disabled:opacity-40 disabled:pointer-events-none flex items-center justify-center gap-2 ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function GhostButton({ children, onClick, className = "", danger = false, disabled, ariaLabel }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      className={`px-4 py-2.5 rounded-2xl text-sm font-medium border transition-all duration-200 flex items-center justify-center gap-2 disabled:opacity-40 disabled:pointer-events-none ${
+        danger
+          ? "bg-rose-500/10 border-rose-500/30 text-rose-300 hover:bg-rose-500/20"
+          : "bg-white/5 border-white/10 text-slate-200 hover:bg-white/10 hover:border-white/20"
+      } ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ProgressRing({ pct, size = 88, stroke = 9, colorFrom = "#d16d94", colorTo = "#d1935a", label, sub, center }) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const [animPct, setAnimPct] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => setAnimPct(clamp(pct, 0, 100)), 80);
+    return () => clearTimeout(t);
+  }, [pct]);
+  const gradId = useRef(uid("ring")).current;
+  return (
+    <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <defs>
+          <linearGradient id={gradId} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor={colorFrom} />
+            <stop offset="100%" stopColor={colorTo} />
+          </linearGradient>
+        </defs>
+        <circle cx={size / 2} cy={size / 2} r={r} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} fill="none" />
+        <circle
+          cx={size / 2} cy={size / 2} r={r}
+          stroke={`url(#${gradId})`} strokeWidth={stroke} fill="none" strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c - (animPct / 100) * c}
+          style={{ transition: "stroke-dashoffset 1s cubic-bezier(.34,1.56,.64,1)" }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        {center || (
+          <>
+            <span className="text-lg font-bold text-white leading-none">{Math.round(pct)}%</span>
+            {sub && <span className="text-[10px] text-slate-400 mt-0.5">{sub}</span>}
+          </>
+        )}
+      </div>
+      {label && <span className="absolute -bottom-6 text-xs text-slate-400 whitespace-nowrap">{label}</span>}
+    </div>
+  );
+}
+
+// Locks background scrolling while a fixed-position overlay (modal, drawer, lightbox) is
+// open. Without this, scrolling the page behind an overlay can cause mobile browsers to
+// reflow their address bar and misposition `position: fixed` elements — which is what was
+// cutting off the top of these dialogs.
+function useLockBodyScroll(locked) {
+  useEffect(() => {
+    if (!locked) return;
+    const prevOverflow = document.body.style.overflow;
+    const prevPosition = document.body.style.position;
+    const prevWidth = document.body.style.width;
+    const scrollY = window.scrollY;
+    document.body.style.overflow = "hidden";
+    document.body.style.position = "fixed";
+    document.body.style.width = "100%";
+    document.body.style.top = `-${scrollY}px`;
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.position = prevPosition;
+      document.body.style.width = prevWidth;
+      document.body.style.top = "";
+      window.scrollTo(0, scrollY);
+    };
+  }, [locked]);
+}
+
+function Modal({ open, onClose, title, children, footer, size = "md" }) {
+  useLockBodyScroll(open);
+  if (!open) return null;
+  const widthClass = size === "lg" ? "max-w-2xl" : "max-w-md";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm animate-[fadeIn_.15s_ease-out]" onClick={onClose} />
+      <div className={`relative w-full ${widthClass} max-h-[85vh] min-h-0 flex flex-col rounded-3xl bg-slate-900 border border-white/10 shadow-2xl animate-[popIn_.2s_ease-out]`}>
+        <div className="flex items-center justify-between px-6 pt-6 pb-4 shrink-0">
+          <h3 className="text-lg font-bold text-white">{title}</h3>
+          <button onClick={onClose} aria-label="Close dialog" className="p-1.5 rounded-full hover:bg-white/10 text-slate-400 hover:text-white transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="text-slate-300 text-sm px-6 pb-6 overflow-y-auto flex-1 min-h-0">{children}</div>
+        {footer && <div className="px-6 pb-6 pt-0 flex gap-3 justify-end shrink-0">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+function Toast({ toast }) {
+  if (!toast) return null;
+  return (
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] animate-[slideUp_.25s_ease-out]">
+      <div className={`${GRAD} px-5 py-3 rounded-2xl shadow-2xl shadow-pink-400/40 flex items-center gap-2.5 text-white font-semibold text-sm`}>
+        <span className="text-lg leading-none">{toast.icon}</span>
+        {toast.message}
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ icon, title, sub, action }) {
+  return (
+    <Card className="p-10 flex flex-col items-center text-center gap-3">
+      <div className="text-5xl mb-1">{icon}</div>
+      <h3 className="text-white font-bold text-lg">{title}</h3>
+      {sub && <p className="text-slate-400 text-sm max-w-sm">{sub}</p>}
+      {action}
+    </Card>
+  );
+}
+
+function SectionHeading({ eyebrow, title, right }) {
+  return (
+    <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+      <div>
+        {eyebrow && <div className={`text-xs font-semibold tracking-wider uppercase mb-1 ${GRAD_TEXT}`}>{eyebrow}</div>}
+        <h2 className="text-xl font-bold text-white">{title}</h2>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function AchievementsGrid({ unlockedIds = [] }) {
+  const PAGE_SIZE = 15; // divides evenly into both the 3-col mobile and 5-col desktop grid
+  const pageCount = Math.ceil(ACHIEVEMENTS.length / PAGE_SIZE);
+  const [page, setPage] = useState(0);
+  const clampedPage = Math.min(page, pageCount - 1);
+  const items = ACHIEVEMENTS.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
+  const unlockedSet = new Set(unlockedIds);
+
+  return (
+    <div>
+      <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+        {items.map((a) => {
+          const unlocked = unlockedSet.has(a.id);
+          return (
+            <div key={a.id} title={a.desc} className={`flex flex-col items-center gap-1.5 p-3 rounded-2xl border text-center ${unlocked ? "bg-amber-500/10 border-amber-500/30" : "bg-white/[0.02] border-white/5 opacity-40"}`}>
+              <span className="text-2xl">{a.icon}</span>
+              <span className="text-[10px] text-slate-300 font-medium leading-tight">{a.name}</span>
+            </div>
+          );
+        })}
+      </div>
+      {pageCount > 1 && (
+        <div className="flex items-center justify-center gap-1.5 mt-4">
+          {Array.from({ length: pageCount }).map((_, i) => (
+            <button
+              key={i}
+              onClick={() => setPage(i)}
+              aria-label={`Page ${i + 1}`}
+              aria-current={clampedPage === i}
+              className={`w-7 h-7 rounded-full text-xs font-semibold transition-colors ${
+                clampedPage === i ? `${GRAD} text-white` : "bg-white/5 text-slate-400 hover:bg-white/10"
+              }`}
+            >
+              {i + 1}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Avatar({ name, swatch, photoUrl, size = "md", ring = false }) {
+  const dim = size === "lg" ? "w-16 h-16 text-xl" : size === "sm" ? "w-8 h-8 text-xs" : "w-11 h-11 text-sm";
+  const initials = (name || "?").trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+  const ringCls = ring ? "ring-2 ring-white/20 ring-offset-2 ring-offset-slate-950" : "";
+  if (photoUrl) {
+    return <img src={photoUrl} alt={name} className={`${dim} rounded-full object-cover shrink-0 ${ringCls}`} />;
+  }
+  return (
+    <div className={`${dim} rounded-full bg-gradient-to-br ${swatch || AVATAR_SWATCHES[0]} flex items-center justify-center font-bold text-white shrink-0 ${ringCls}`}>
+      {initials}
+    </div>
+  );
+}
+
+function StatBlock({ icon, label, value, accent = "text-white" }) {
+  return (
+    <div className="flex items-center gap-3 p-3.5 rounded-2xl bg-white/[0.03] border border-white/5">
+      <div className="w-9 h-9 rounded-xl bg-white/5 flex items-center justify-center shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <div className={`text-lg font-bold leading-tight ${accent}`}>{value}</div>
+        <div className="text-[11px] text-slate-400 truncate">{label}</div>
+      </div>
+    </div>
+  );
+}
+
+/* =============================== Auth screens ============================= */
+
+function BackgroundGlow() {
+  return (
+    <div className="fixed inset-0 overflow-hidden pointer-events-none">
+      <div className="absolute -top-32 -left-24 w-96 h-96 rounded-full bg-pink-500/25 blur-3xl" />
+      <div className="absolute top-1/3 -right-24 w-[28rem] h-[28rem] rounded-full bg-emerald-400/15 blur-3xl" />
+      <div className="absolute bottom-0 left-1/4 w-96 h-96 rounded-full bg-amber-500/10 blur-3xl" />
+    </div>
+  );
+}
+
+function Wordmark({ size = "text-3xl" }) {
+  return (
+    <div className={`font-black tracking-tight ${size} flex items-center gap-2`}>
+      <span className={`w-8 h-8 rounded-xl ${GRAD_DIAG} inline-flex items-center justify-center text-white text-base`}>◆</span>
+      <span className={GRAD_TEXT}>PRISM</span>
+    </div>
+  );
+}
+
+function LoginScreen({ onGoogleSignIn }) {
+  return (
+    <div className="min-h-screen relative flex items-center justify-center p-6 bg-slate-950 text-slate-100">
+      <BackgroundGlow />
+      <div className="relative w-full max-w-sm">
+        <div className="flex flex-col items-center text-center mb-8">
+          <Wordmark size="text-4xl" />
+          <p className="text-slate-400 mt-3 text-sm max-w-xs">
+            The private training hub for you and your crew. Log workouts, track every rep, and push each other forward.
+          </p>
+        </div>
+        <Card className="p-6">
+          <div className="flex flex-col gap-3">
+            <GradientButton size="lg" onClick={onGoogleSignIn}>
+              <svg width="18" height="18" viewBox="0 0 48 48" className="shrink-0">
+                <path fill="#fff" d="M44.5 20H24v8.5h11.8C34.6 33.9 30 37 24 37c-7.2 0-13-5.8-13-13s5.8-13 13-13c3.3 0 6.3 1.2 8.6 3.2l6-6C34.9 4.1 29.7 2 24 2 11.8 2 2 11.8 2 24s9.8 22 22 22c11 0 21-8 21-22 0-1.3-.1-2.7-.5-4z"/>
+              </svg>
+              Continue with Google
+            </GradientButton>
+            <p className="text-center text-[11px] text-slate-500">The first person to sign in becomes admin. Everyone after that needs approval.</p>
+          </div>
+        </Card>
+        <p className="text-center text-xs text-slate-600 mt-6">Sign in and start training right away. Admin approval unlocks the Members list &amp; Leaderboard.</p>
+      </div>
+    </div>
+  );
+}
+
+function PendingApprovalBanner({ onRefresh, refreshing }) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-3 mb-6 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-amber-100">
+      <div className="w-9 h-9 shrink-0 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-base">⏳</div>
+      <p className="flex-1 min-w-0 text-xs sm:text-sm leading-snug">
+        <span className="font-semibold">Waiting for admin approval.</span>{" "}
+        You can use everything already — once approved you'll also show up on the Members list and Leaderboard.
+      </p>
+      <button
+        onClick={onRefresh} disabled={refreshing} aria-label="Check approval status"
+        className="shrink-0 w-8 h-8 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-amber-100 flex items-center justify-center transition-colors disabled:opacity-50"
+        title="Check status"
+      >
+        <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+      </button>
+    </div>
+  );
+}
+
+/* ================================== Shell ================================= */
+
+const NAV_ITEMS = [
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "today", label: "Today", icon: CalendarCheck },
+  { id: "programs", label: "Programs", icon: Dumbbell },
+  { id: "members", label: "Members", icon: Users },
+];
+
+function NavList({ page, goTo, vertical = true }) {
+  return (
+    <nav className={`relative flex ${vertical ? "flex-col gap-1" : "flex-row gap-1"}`}>
+      {NAV_ITEMS.map((item) => {
+        const active = page === item.id;
+        const Icon = item.icon;
+        return (
+          <button
+            key={item.id}
+            onClick={() => goTo(item.id)}
+            className={`relative flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-semibold transition-all duration-300 group ${
+              active ? "text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+            }`}
+          >
+            {active && (
+              <span className={`absolute inset-0 rounded-2xl ${GRAD} shadow-lg shadow-pink-400/30 animate-[popIn_.25s_ease-out]`} />
+            )}
+            <Icon size={18} className="relative z-10" />
+            <span className="relative z-10">{item.label}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+function Sidebar({ me, page, goTo, onOpenProfile, onSignOut }) {
+  return (
+    <aside className="hidden md:flex flex-col w-64 shrink-0 h-screen sticky top-0 border-r border-white/10 bg-slate-950/60 backdrop-blur-xl p-5">
+      <Wordmark />
+      <button onClick={() => onOpenProfile()} className="mt-7 flex items-center gap-3 p-3 rounded-2xl hover:bg-white/5 transition-colors text-left">
+        <Avatar name={me.name} swatch={me.avatar} photoUrl={me.avatarUrl} ring />
+        <div className="min-w-0">
+          <div className="text-white font-semibold text-sm truncate">{me.name}</div>
+          <div className="text-[11px] text-slate-400 flex items-center gap-1">
+            <Flame size={11} className="text-orange-400" /> {me.streak}-day streak
+          </div>
+        </div>
+      </button>
+
+      <div className="mt-6 flex-1">
+        <NavList page={page} goTo={goTo} />
+      </div>
+
+      <div className="pt-4 border-t border-white/10 flex flex-col gap-1">
+        <button
+          onClick={() => goTo("profile")}
+          className={`relative flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-semibold transition-all duration-300 ${
+            page === "profile" ? "text-white" : "text-slate-400 hover:text-white hover:bg-white/5"
+          }`}
+        >
+          {page === "profile" && <span className={`absolute inset-0 rounded-2xl ${GRAD} shadow-lg shadow-pink-400/30`} />}
+          <User size={18} className="relative z-10" />
+          <span className="relative z-10">Profile</span>
+        </button>
+        <button onClick={onSignOut} className="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium text-slate-500 hover:text-rose-300 hover:bg-rose-500/10 transition-colors">
+          <LogOut size={17} /> Sign out
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function MobileTopbar({ me, onMenu }) {
+  return (
+    <div className="md:hidden sticky top-0 z-30 flex items-center justify-between px-4 py-3 bg-slate-950/80 backdrop-blur-xl border-b border-white/10">
+      <button onClick={onMenu} aria-label="Open menu" className="p-2 rounded-xl hover:bg-white/10 text-white"><Menu size={20} /></button>
+      <Wordmark size="text-lg" />
+      <Avatar name={me.name} swatch={me.avatar} photoUrl={me.avatarUrl} size="sm" />
+    </div>
+  );
+}
+
+function MobileDrawer({ open, onClose, me, page, goTo, onSignOut }) {
+  useLockBodyScroll(open);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 md:hidden">
+      <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute left-0 top-0 bottom-0 w-72 bg-slate-950 border-r border-white/10 p-5 flex flex-col animate-[slideRight_.2s_ease-out]">
+        <div className="flex items-center justify-between">
+          <Wordmark size="text-xl" />
+          <button onClick={onClose} aria-label="Close menu" className="p-1.5 rounded-full hover:bg-white/10 text-slate-400"><X size={18} /></button>
+        </div>
+        <button onClick={() => { goTo("profile"); onClose(); }} className="mt-6 flex items-center gap-3 p-3 rounded-2xl hover:bg-white/5 text-left">
+          <Avatar name={me.name} swatch={me.avatar} photoUrl={me.avatarUrl} ring />
+          <div className="min-w-0">
+            <div className="text-white font-semibold text-sm truncate">{me.name}</div>
+            <div className="text-[11px] text-slate-400 flex items-center gap-1"><Flame size={11} className="text-orange-400" /> {me.streak}-day streak</div>
+          </div>
+        </button>
+        <div className="mt-6 flex-1">
+          <NavList page={page} goTo={(id) => { goTo(id); onClose(); }} />
+        </div>
+        <div className="pt-4 border-t border-white/10 flex flex-col gap-1">
+          <button onClick={() => { goTo("profile"); onClose(); }} className="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5">
+            <User size={18} /> Profile
+          </button>
+          <button onClick={onSignOut} className="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium text-slate-500 hover:text-rose-300 hover:bg-rose-500/10">
+            <LogOut size={17} /> Sign out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =============================== Dashboard ================================ */
+
+export function weekBoundsISO(iso) {
+  const d = isoToDate(iso);
+  const jsDay = d.getDay(); // 0=sun
+  const mondayOffset = jsDay === 0 ? -6 : 1 - jsDay;
+  const monday = addDaysISO(iso, mondayOffset);
+  const sunday = addDaysISO(monday, 6);
+  return [monday, sunday];
+}
+
+function countScheduledProgress(me, program, startISO, endISO) {
+  let total = 0, done = 0;
+  if (!program) return { total, done };
+  let day = startISO;
+  let guard = 0;
+  while (day <= endISO && guard < 400) {
+    const sched = program.days[dayKeyForISO(day)];
+    if (sched?.type === "workout") {
+      total++;
+      if (me.worklogs[day]?.completedAt) done++;
+    }
+    day = addDaysISO(day, 1);
+    guard++;
+  }
+  return { total, done };
+}
+
+export function computeProgress(me, program, todayOverride) {
+  const iso = todayOverride || todayISO();
+  const [weekStart] = weekBoundsISO(iso);
+  const monthStart = iso.slice(0, 8) + "01";
+  // Computed independently (not as one combined loop) because the current week can
+  // dip into the previous month — e.g. a Monday week-start on the last days of August
+  // while "today" is already in September. A single month-anchored loop would silently
+  // undercount those early-week days.
+  const week = countScheduledProgress(me, program, weekStart, iso);
+  const month = countScheduledProgress(me, program, monthStart, iso);
+  return {
+    weekPct: week.total ? Math.round((week.done / week.total) * 100) : 0,
+    monthPct: month.total ? Math.round((month.done / month.total) * 100) : 0,
+    weekDone: week.done, weekTotal: week.total, monthDone: month.done, monthTotal: month.total,
+  };
+}
+
+function last7DaysVolume(me) {
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const iso = addDaysISO(todayISO(), -i);
+    let vol = 0;
+    Object.values(me.history || {}).forEach((arr) => {
+      arr.forEach((h) => { if (h.date === iso) vol += h.volume; });
+    });
+    days.push({ day: isoToDate(iso).toLocaleDateString(undefined, { weekday: "short" })[0], vol });
+  }
+  return days;
+}
+
+function MiniBarChart({ data }) {
+  const max = Math.max(1, ...data.map((d) => d.vol));
+  return (
+    <div className="flex items-end gap-2 h-20">
+      {data.map((d, i) => (
+        <div key={i} className="flex-1 flex flex-col items-center gap-1.5">
+          <div className="w-full rounded-t-lg bg-white/5 relative overflow-hidden" style={{ height: 64 }}>
+            <div
+              className={`absolute bottom-0 left-0 right-0 rounded-t-lg ${GRAD}`}
+              style={{ height: `${(d.vol / max) * 100}%`, transition: "height .8s cubic-bezier(.34,1.56,.64,1)" }}
+            />
+          </div>
+          <span className="text-[10px] text-slate-500">{d.day}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Dashboard({ me, members, programs, goTo }) {
+  const program = me.activeProgramId ? programs[me.activeProgramId] : null;
+  const lvl = levelInfo(me.xp);
+  const progress = useMemo(() => computeProgress(me, program), [me, program]);
+  const quote = pickDaily(me.name, WORKOUT_QUOTES);
+  const todaySched = program?.days?.[todayDayKey()];
+  const isRest = !program || todaySched?.type !== "workout";
+  const vol7 = useMemo(() => last7DaysVolume(me), [me]);
+
+  const leaderboard = useMemo(
+    () => Object.values(members).filter((m) => m.status === "approved").sort((a, b) => b.xp - a.xp).slice(0, 5),
+    [members]
+  );
+
+  const recentAch = (me.unlocked || []).slice(-3).reverse().map((id) => ACHIEVEMENTS.find((a) => a.id === id)).filter(Boolean);
+
+  // next rest day
+  let nextRest = null;
+  if (program) {
+    for (let i = 1; i <= 7; i++) {
+      const iso = addDaysISO(todayISO(), i);
+      if (program.days[dayKeyForISO(iso)]?.type !== "workout") { nextRest = iso; break; }
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-2xl md:text-3xl font-black text-white">Welcome back, {me.name.split(" ")[0]} 👋</h1>
+        <p className={`mt-1.5 text-base font-medium ${GRAD_TEXT}`}>{quote}</p>
+        <p className="text-slate-500 text-sm mt-1">{formatNiceDate(todayISO())}</p>
+      </div>
+
+      {/* Overall progress */}
+      <Card className="p-6">
+        <SectionHeading eyebrow="Overview" title="Overall progress" />
+        <div className="flex flex-wrap gap-8 items-center justify-around">
+          <ProgressRing pct={progress.weekPct} colorFrom="#d16d94" colorTo="#c9ad55" label="This week" sub={`${progress.weekDone}/${progress.weekTotal || 0}`} />
+          <ProgressRing pct={progress.monthPct} colorFrom="#5a9fb3" colorTo="#5fa87e" label="This month" sub={`${progress.monthDone}/${progress.monthTotal || 0}`} />
+          <div className="flex flex-col items-center gap-1">
+            <div className="w-[88px] h-[88px] rounded-full bg-gradient-to-br from-orange-500/20 to-rose-500/20 border border-orange-500/30 flex flex-col items-center justify-center">
+              <Flame className="text-orange-400" size={22} />
+              <span className="text-lg font-bold text-white leading-none mt-1">{me.streak}</span>
+            </div>
+            <span className="text-xs text-slate-400 mt-1">Day streak</span>
+          </div>
+          <div className="flex flex-col items-center gap-2 min-w-[160px]">
+            <div className="flex flex-col items-center gap-0.5 w-full text-sm">
+              <span className="text-white font-bold flex items-center gap-1"><Star size={14} className="text-amber-400" /> Level {lvl.level}</span>
+              <span className="text-slate-400 text-xs">{lvl.into}/{lvl.need} XP</span>
+            </div>
+            <div className="w-full h-2.5 rounded-full bg-white/5 overflow-hidden">
+              <div className={`h-full ${GRAD_WARM} rounded-full`} style={{ width: `${lvl.pct}%`, transition: "width 1s cubic-bezier(.34,1.56,.64,1)" }} />
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <div className="grid md:grid-cols-3 gap-6">
+        {/* Today's workout */}
+        <Card className="p-6 md:col-span-2 flex flex-col justify-between" glow>
+          <div>
+            <SectionHeading eyebrow="Today" title={isRest ? "Rest day" : `${DAY_LABEL[todayDayKey()]} Session`} />
+            {isRest ? (
+              <p className="text-slate-400 text-sm">No workout scheduled today — recovery is on the plan. {nextRest && <>Next session {formatShortDate(nextRest)}.</>}</p>
+            ) : (
+              <div className="flex flex-wrap gap-4 text-sm text-slate-300 mb-2">
+                <span className="flex items-center gap-1.5"><Clock size={15} className="text-emerald-400" /> ~{todaySched.exercises.length * 9} min</span>
+                <span className="flex items-center gap-1.5"><ListChecks size={15} className="text-pink-400" /> {todaySched.exercises.length} exercises</span>
+                <span className="flex items-center gap-1.5"><Target size={15} className="text-amber-400" /> {Array.from(new Set(todaySched.exercises.map((e) => getEx(e.exerciseId)?.muscle))).join(", ")}</span>
+              </div>
+            )}
+          </div>
+          <GradientButton size="lg" className="mt-4 w-full sm:w-fit" onClick={() => goTo("today")}>
+            <Play size={18} fill="white" /> {isRest ? "View rest day" : "Start workout"}
+          </GradientButton>
+        </Card>
+
+        {/* Leaderboard preview */}
+        <Card className="p-6">
+          <SectionHeading eyebrow="Crew" title="Leaderboard" right={<button onClick={() => goTo("members")} className="text-xs text-pink-400 hover:text-pink-300 font-semibold flex items-center gap-0.5">All <ChevronRight size={13} /></button>} />
+          <div className="flex flex-col gap-2.5">
+            {leaderboard.map((m, i) => (
+              <div key={m.id} className="flex items-center gap-2.5">
+                <span className={`w-5 text-xs font-bold ${i === 0 ? "text-amber-400" : "text-slate-500"}`}>{i + 1}</span>
+                <Avatar name={m.name} swatch={m.avatar} photoUrl={m.avatarUrl} size="sm" />
+                <span className="text-sm text-slate-200 truncate flex-1">{m.id === me.id ? "You" : m.name}</span>
+                <span className="text-xs font-semibold text-slate-400">{m.xp} XP</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-6">
+        <Card className="p-6 md:col-span-2">
+          <SectionHeading eyebrow="Momentum" title="Volume, last 7 days" />
+          <MiniBarChart data={vol7} />
+        </Card>
+        <Card className="p-6">
+          <SectionHeading eyebrow="Latest" title="Achievements" />
+          {recentAch.length === 0 ? (
+            <p className="text-sm text-slate-500">Complete a workout to start unlocking badges.</p>
+          ) : (
+            <div className="flex flex-col gap-2.5">
+              {recentAch.map((a) => (
+                <div key={a.id} className="flex items-center gap-3">
+                  <span className="text-2xl">{a.icon}</span>
+                  <div className="min-w-0">
+                    <div className="text-sm text-white font-semibold truncate">{a.name}</div>
+                    <div className="text-[11px] text-slate-500 truncate">{a.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ================================= Today =================================== */
+
+function round1(n) { return Math.round(n * 2) / 2; }
+
+function NumberField({ value, onChange, step = 1, min = 0, width = "w-14", label = "value" }) {
+  return (
+    <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <button type="button" aria-label={`Decrease ${label}`} onClick={() => onChange(Math.max(min, round1(value - step)))} className="w-6 h-6 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center shrink-0">
+        <Minus size={12} />
+      </button>
+      <input
+        type="number" value={value} aria-label={label}
+        onChange={(e) => onChange(Math.max(min, Number(e.target.value) || 0))}
+        className={`${width} text-center bg-white/5 border border-white/10 rounded-lg py-1 text-sm text-white focus:outline-none focus:ring-1 focus:ring-pink-400/50`}
+      />
+      <button type="button" aria-label={`Increase ${label}`} onClick={() => onChange(round1(value + step))} className="w-6 h-6 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center shrink-0">
+        <Plus size={12} />
+      </button>
+    </div>
+  );
+}
+
+// Renders the right "weight" control for an exercise's loadType:
+//  - external: a plain kg NumberField (unchanged behavior)
+//  - bodyweight: an "added weight" NumberField (extra load, defaults to 0) plus a
+//    live estimated total (bodyweight × coefficient + added). onChange always
+//    reports { weight, addedWeight } so the total is what's stored/tracked.
+//  - cardio: no weight to log
+function LoadField({ ex, weight, addedWeight, bodyweightKg, done, onChange, width = "w-14" }) {
+  if (!ex) return null;
+  if (ex.loadType === "cardio") {
+    return <span className="text-slate-500 italic">time / distance based</span>;
+  }
+  if (ex.loadType === "bodyweight") {
+    const added = Number(addedWeight) || 0;
+    const est = computeBodyweightLoad(ex, added, bodyweightKg);
+    if (done) {
+      return (
+        <span>
+          <b className="text-white">≈{weight}kg</b>{" "}
+          <span className="text-slate-500">({ex.bwPercent}% BW{added > 0 ? ` +${added}kg` : ""})</span>
+        </span>
+      );
+    }
+    return (
+      <span className="flex items-center gap-1.5 flex-wrap">
+        <span>+wt</span>
+        <NumberField
+          value={added}
+          onChange={(v) => onChange({ addedWeight: v, weight: computeBodyweightLoad(ex, v, bodyweightKg) })}
+          step={2.5} min={0} width={width} label="added weight in kilograms"
+        />
+        <span className="text-slate-500">≈{est}kg total</span>
+      </span>
+    );
+  }
+  // external
+  if (done) return <b className="text-white">{weight}kg</b>;
+  return <NumberField value={weight} onChange={(v) => onChange({ weight: v })} step={2.5} min={0} width={width} label="weight in kilograms" />;
+}
+
+function buildTodayInstances(me, todaySched, iso) {
+  const saved = me.worklogs[iso];
+  return (todaySched?.exercises || []).map((pex) => {
+    const savedEx = saved?.exercises?.[pex.exerciseId];
+    if (savedEx) return { ...savedEx, id: pex.id, exerciseId: pex.exerciseId };
+    const ex = getEx(pex.exerciseId);
+    const hist = me.history[pex.exerciseId] || [];
+    const last = hist[hist.length - 1];
+    if (ex?.loadType === "bodyweight") {
+      const addedWeight = last ? (last.addedWeight ?? 0) : (pex.targetAddedWeight ?? 0);
+      const weight = computeBodyweightLoad(ex, addedWeight, me.bodyweightKg);
+      return { id: pex.id, exerciseId: pex.exerciseId, sets: pex.sets, reps: pex.reps, weight, addedWeight, done: false, isPR: false };
+    }
+    if (ex?.loadType === "cardio") {
+      return { id: pex.id, exerciseId: pex.exerciseId, sets: pex.sets, reps: pex.reps, weight: 0, done: false, isPR: false };
+    }
+    return { id: pex.id, exerciseId: pex.exerciseId, sets: pex.sets, reps: pex.reps, weight: last ? last.weight : pex.targetWeight, done: false, isPR: false };
+  });
+}
+
+function RestDayView({ me }) {
+  const quote = pickDaily(me.name + "rest", REST_QUOTES);
+  const tip = pickDaily(me.name + "tip", RECOVERY_TIPS);
+  return (
+    <Card
+      className="relative overflow-hidden p-10 md:p-14 flex flex-col items-center text-center gap-5 bg-gradient-to-br from-pink-500/10 via-amber-400/5 to-transparent"
+      glow
+    >
+      <div
+        className="pointer-events-none absolute inset-0 opacity-60"
+        style={{
+          backgroundImage: "radial-gradient(circle at 30% 20%, rgba(216,109,148,0.12), transparent 45%), radial-gradient(circle at 75% 70%, rgba(201,173,85,0.10), transparent 50%)",
+          backgroundSize: "180% 180%",
+          animation: "restGradientDrift 10s ease-in-out infinite",
+        }}
+      />
+      <div className="relative flex items-center justify-center h-20 w-20">
+        <div
+          className="absolute inset-0 rounded-full bg-amber-300/30 blur-xl"
+          style={{ animation: "moonGlow 3.5s ease-in-out infinite" }}
+        />
+        <div className="relative text-6xl" style={{ animation: "moonFloat 4.5s ease-in-out infinite" }}>🌙</div>
+      </div>
+      <h2 className="text-2xl font-black text-white">Rest day</h2>
+      <p className={`text-lg font-medium max-w-md ${GRAD_TEXT}`}>{quote}</p>
+      <div className="mt-2 max-w-md p-4 rounded-2xl bg-white/5 border border-white/10 flex items-start gap-3 text-left">
+        <Sparkles size={18} className="text-emerald-400 shrink-0 mt-0.5" />
+        <p className="text-sm text-slate-300">{tip}</p>
+      </div>
+    </Card>
+  );
+}
+
+function ExerciseProgressCard({ inst, onChange, onComplete, onOpen, done, bodyweightKg }) {
+  const ex = getEx(inst.exerciseId);
+  const volume = volumeOf(inst.sets, inst.reps, inst.weight);
+  const isCardio = ex?.loadType === "cardio";
+  return (
+    <div
+      onClick={() => onOpen(inst.exerciseId)}
+      className={`rounded-2xl border p-4 flex flex-col gap-3 cursor-pointer transition-all duration-300 hover:border-white/20 ${
+        done ? "bg-emerald-500/5 border-emerald-500/20" : "bg-white/[0.04] border-white/10"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-2xl shrink-0">{ex?.icon}</span>
+          <div className="min-w-0">
+            <div className="text-white font-semibold text-sm truncate">{ex?.name}</div>
+            <div className="text-[11px] text-slate-500">{ex?.muscle}{inst.prevResult ? ` · Previous: ${inst.prevResult}` : " · First time!"}</div>
+          </div>
+        </div>
+        {!done ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onComplete(); }}
+            className={`w-9 h-9 rounded-full ${GRAD} flex items-center justify-center text-white shadow-md shadow-pink-400/30 hover:scale-110 active:scale-95 transition-transform shrink-0`}
+            aria-label="Mark complete"
+          >
+            <Check size={18} />
+          </button>
+        ) : (
+          <div className="flex items-center gap-1.5 shrink-0">
+            {inst.isPR && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">PR 🎉</span>}
+            <span className="w-9 h-9 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400"><Check size={16} /></span>
+          </div>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-400" onClick={(e) => done && e.stopPropagation()}>
+        <div className="flex items-center gap-1.5">Sets {done ? <b className="text-white">{inst.sets}</b> : <NumberField value={inst.sets} onChange={(v) => onChange({ sets: v })} step={1} min={1} width="w-10" label="sets" />}</div>
+        <div className="flex items-center gap-1.5">Reps {done ? <b className="text-white">{inst.reps}</b> : <NumberField value={inst.reps} onChange={(v) => onChange({ reps: v })} step={1} min={1} width="w-10" label="reps" />}</div>
+        {!isCardio && (
+          <div className="flex items-center gap-1.5">
+            {ex?.loadType === "bodyweight" ? "Added" : "Weight"}{" "}
+            <LoadField ex={ex} weight={inst.weight} addedWeight={inst.addedWeight} bodyweightKg={bodyweightKg} done={done} onChange={onChange} />
+          </div>
+        )}
+        {!isCardio && <div className="flex items-center gap-1.5 ml-auto text-slate-500">Volume <b className="text-emerald-300">{volume}kg</b></div>}
+      </div>
+    </div>
+  );
+}
+
+function TodayPage({ me, programs, openExercise, onCompleteExercise, onEditDone, onCreateProgram }) {
+  const program = me.activeProgramId ? programs[me.activeProgramId] : null;
+  const iso = todayISO();
+  const dayKey = todayDayKey();
+  const todaySched = program?.days?.[dayKey];
+  const [tab, setTab] = useState("progress");
+  const buildKey = `${me.activeProgramId}_${iso}`;
+  const lastBuildKey = useRef(null);
+  const [instances, setInstances] = useState([]);
+
+  useEffect(() => {
+    if (lastBuildKey.current !== buildKey && todaySched?.type === "workout") {
+      const built = buildTodayInstances(me, todaySched, iso).map((inst) => {
+        const hist = me.history[inst.exerciseId] || [];
+        const prev = hist[hist.length - (inst.done ? 2 : 1)];
+        return { ...inst, prevResult: prev ? `${prev.sets}×${prev.reps} @ ${prev.weight}kg` : null };
+      });
+      setInstances(built);
+      lastBuildKey.current = buildKey;
+    }
+  }, [buildKey, todaySched, me]);
+
+  if (!program) {
+    return (
+      <EmptyState
+        icon="🗓️"
+        title="No active program yet"
+        sub="Create a workout program and activate it to see your daily session here."
+        action={<GradientButton onClick={onCreateProgram}><Plus size={16} /> Create a program</GradientButton>}
+      />
+    );
+  }
+  if (todaySched?.type !== "workout") {
+    return <RestDayView me={me} />;
+  }
+
+  const update = (idx, patch) => setInstances((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+  const complete = (idx) => {
+    const inst = instances[idx];
+    const hist = me.history[inst.exerciseId] || [];
+    const prevMax = hist.reduce((m, h) => Math.max(m, h.weight), 0);
+    const isPR = inst.weight > prevMax;
+    const finalized = { ...inst, done: true, isPR };
+    setInstances((prev) => prev.map((it, i) => (i === idx ? finalized : it)));
+    onCompleteExercise(finalized, instances.map((it, i) => (i === idx ? finalized : it)));
+  };
+
+  const todo = instances.filter((i) => !i.done);
+  const done = instances.filter((i) => i.done);
+  const pct = instances.length ? Math.round((done.length / instances.length) * 100) : 0;
+  const muscles = Array.from(new Set(todaySched.exercises.map((e) => getEx(e.exerciseId)?.muscle)));
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <div className={`text-xs font-semibold tracking-wider uppercase mb-1 ${GRAD_TEXT}`}>{DAY_LABEL[dayKey]}</div>
+        <h1 className="text-2xl md:text-3xl font-black text-white">{program.name}</h1>
+        <div className="flex flex-wrap gap-4 text-sm text-slate-400 mt-2">
+          <span className="flex items-center gap-1.5"><Target size={15} className="text-amber-400" /> {muscles.join(", ")}</span>
+          <span className="flex items-center gap-1.5"><Clock size={15} className="text-emerald-400" /> ~{instances.length * 9} min</span>
+        </div>
+      </div>
+
+      <Card className="p-5">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm font-semibold text-white">Workout progress</span>
+          <span className="text-sm text-slate-400">{done.length}/{instances.length} done</span>
+        </div>
+        <div className="w-full h-2.5 rounded-full bg-white/5 overflow-hidden">
+          <div className={`h-full ${GRAD} rounded-full`} style={{ width: `${pct}%`, transition: "width .6s cubic-bezier(.34,1.56,.64,1)" }} />
+        </div>
+      </Card>
+
+      <div className="flex gap-2">
+        <Chip active={tab === "progress"} onClick={() => setTab("progress")}>On Progress ({todo.length})</Chip>
+        <Chip active={tab === "done"} onClick={() => setTab("done")}>Done ({done.length})</Chip>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        {tab === "progress" && (
+          todo.length === 0 ? (
+            <EmptyState icon="🎉" title="All exercises logged!" sub="Great work — check the Done tab to review or edit today's numbers." />
+          ) : (
+            todo.map((inst) => {
+              const idx = instances.findIndex((i) => i.id === inst.id);
+              return <ExerciseProgressCard key={inst.id} inst={inst} done={false} onChange={(p) => update(idx, p)} onComplete={() => complete(idx)} onOpen={openExercise} bodyweightKg={me.bodyweightKg} />;
+            })
+          )
+        )}
+        {tab === "done" && (
+          done.length === 0 ? (
+            <EmptyState icon="💤" title="Nothing logged yet" sub="Finish an exercise on the On Progress tab and it'll land here." />
+          ) : (
+            done.map((inst) => {
+              const idx = instances.findIndex((i) => i.id === inst.id);
+              return (
+                <DoneExerciseCard
+                  key={inst.id} inst={inst} onOpen={openExercise} bodyweightKg={me.bodyweightKg}
+                  onSave={(patch) => {
+                    const updated = { ...inst, ...patch };
+                    const hist = me.history[inst.exerciseId] || [];
+                    const priorMax = hist.reduce((mx, h, i) => (i === hist.length - 1 ? mx : Math.max(mx, h.weight)), 0);
+                    updated.isPR = updated.weight > priorMax;
+                    setInstances((prev) => prev.map((it, i) => (i === idx ? updated : it)));
+                    onEditDone(inst, updated);
+                  }}
+                />
+              );
+            })
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DoneExerciseCard({ inst, onOpen, onSave, bodyweightKg }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({ sets: inst.sets, reps: inst.reps, weight: inst.weight, addedWeight: inst.addedWeight });
+  const ex = getEx(inst.exerciseId);
+  const isCardio = ex?.loadType === "cardio";
+  const volume = volumeOf(draft.sets, draft.reps, draft.weight);
+
+  if (!editing) {
+    return (
+      <div onClick={() => onOpen(inst.exerciseId)} className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 flex items-center justify-between gap-3 cursor-pointer hover:border-emerald-500/30 transition-colors">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-2xl shrink-0">{ex?.icon}</span>
+          <div className="min-w-0">
+            <div className="text-white font-semibold text-sm truncate flex items-center gap-2">
+              {ex?.name}
+              {inst.isPR && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">PR</span>}
+            </div>
+            <div className="text-[11px] text-slate-400">
+              {inst.sets}×{inst.reps}{!isCardio ? ` @ ${inst.weight}kg · Volume ${volumeOf(inst.sets, inst.reps, inst.weight)}kg` : ""}
+            </div>
+          </div>
+        </div>
+        <button onClick={(e) => { e.stopPropagation(); setDraft({ sets: inst.sets, reps: inst.reps, weight: inst.weight, addedWeight: inst.addedWeight }); setEditing(true); }} aria-label={`Edit logged ${ex?.name || "exercise"}`} className="p-2 rounded-xl hover:bg-white/10 text-slate-400 hover:text-white shrink-0">
+          <Pencil size={15} />
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 flex flex-col gap-3">
+      <div className="flex items-center gap-3"><span className="text-2xl">{ex?.icon}</span><span className="text-white font-semibold text-sm">{ex?.name}</span></div>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-400">
+        <div className="flex items-center gap-1.5">Sets <NumberField value={draft.sets} onChange={(v) => setDraft((d) => ({ ...d, sets: v }))} step={1} min={1} width="w-10" label="sets" /></div>
+        <div className="flex items-center gap-1.5">Reps <NumberField value={draft.reps} onChange={(v) => setDraft((d) => ({ ...d, reps: v }))} step={1} min={1} width="w-10" label="reps" /></div>
+        {!isCardio && (
+          <div className="flex items-center gap-1.5">
+            {ex?.loadType === "bodyweight" ? "Added" : "Weight"}{" "}
+            <LoadField ex={ex} weight={draft.weight} addedWeight={draft.addedWeight} bodyweightKg={bodyweightKg} done={false} onChange={(p) => setDraft((d) => ({ ...d, ...p }))} />
+          </div>
+        )}
+        {!isCardio && <div className="ml-auto text-slate-500">Volume <b className="text-emerald-300">{volume}kg</b></div>}
+      </div>
+      <div className="flex gap-2 justify-end">
+        <GhostButton onClick={() => setEditing(false)}>Cancel</GhostButton>
+        <GradientButton onClick={() => { onSave(draft); setEditing(false); }}><Save size={14} /> Save</GradientButton>
+      </div>
+    </div>
+  );
+}
+
+/* =============================== Day detail ================================ */
+// Reached by tapping a date on the Consistency calendar. Shows what was scheduled
+// and what got logged that day. Editing sets/completion is only ever done on the
+// live Today page, so this is a read-only summary — except for today itself,
+// which links straight over to the real Today page.
+function DayDetailPage({ iso, me, programs, onBack, openExercise, goToToday }) {
+  const program = me.activeProgramId ? programs[me.activeProgramId] : null;
+  const dayKey = dayKeyForISO(iso);
+  const sched = program?.days?.[dayKey];
+  const log = me.worklogs[iso];
+  const isToday = iso === todayISO();
+  const isWorkoutDay = program && sched?.type === "workout";
+  const loggedVolume = log?.completedAt
+    ? Object.values(log.exercises || {}).reduce((s, e) => s + volumeOf(e.sets, e.reps, e.weight), 0)
+    : 0;
+
+  return (
+    <div className="flex flex-col gap-6">
+      <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors w-fit">
+        <ArrowLeft size={16} /> Back to profile
+      </button>
+
+      <div>
+        <div className={`text-xs font-semibold tracking-wider uppercase mb-1 ${GRAD_TEXT}`}>{DAY_LABEL[dayKey]}</div>
+        <h1 className="text-2xl md:text-3xl font-black text-white">{formatNiceDate(iso)}</h1>
+      </div>
+
+      {isToday && (
+        <Card className="p-4 flex items-center justify-between gap-3 flex-wrap">
+          <span className="text-sm text-slate-300">This is today — log or edit sets on the Today tab.</span>
+          <GradientButton size="sm" onClick={goToToday}>Go to Today <ChevronRight size={14} /></GradientButton>
+        </Card>
+      )}
+
+      {!isWorkoutDay ? (
+        <EmptyState
+          icon="🌙" title="Rest day"
+          sub={program ? "No workout was scheduled for this day." : "No active program was set for this day."}
+        />
+      ) : (
+        <Card className="p-5">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+            <SectionHeading eyebrow="Session" title={program.name} />
+            {log?.completedAt && <span className="text-xs font-semibold text-emerald-300 shrink-0">Volume {loggedVolume}kg</span>}
+          </div>
+          <div className="flex flex-col gap-2.5">
+            {sched.exercises.map((e, i) => {
+              const ex = getEx(e.exerciseId);
+              const doneEntry = log?.exercises?.[e.exerciseId];
+              return (
+                <div
+                  key={i} onClick={() => openExercise(e.exerciseId)}
+                  className={`flex items-center justify-between gap-3 p-3.5 rounded-2xl border cursor-pointer transition-colors ${doneEntry ? "border-emerald-500/20 bg-emerald-500/5 hover:border-emerald-500/30" : "border-white/5 bg-white/[0.02] hover:border-white/10"}`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="text-xl shrink-0">{ex?.icon}</span>
+                    <div className="min-w-0">
+                      <div className="text-white text-sm font-semibold truncate">{ex?.name}</div>
+                      <div className="text-[11px] text-slate-400">
+                        {doneEntry
+                          ? `${doneEntry.sets}×${doneEntry.reps}${ex?.loadType !== "cardio" ? ` @ ${doneEntry.weight}kg` : ""}`
+                          : `Target ${e.sets}×${e.reps}`}
+                      </div>
+                    </div>
+                  </div>
+                  {doneEntry ? <Check size={16} className="text-emerald-400 shrink-0" /> : <span className="text-[11px] text-slate-500 shrink-0">Not logged</span>}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ============================= Exercise Detail ============================= */
+
+function exerciseStats(hist) {
+  const iso = todayISO();
+  const weekAgo = addDaysISO(iso, -7);
+  const monthAgo = addDaysISO(iso, -30);
+  const yearAgo = addDaysISO(iso, -365);
+  const sum = (arr) => arr.reduce((s, h) => s + h.volume, 0);
+  const pr = hist.reduce((best, h) => (h.weight > (best?.weight || 0) ? h : best), null);
+  return {
+    lifetime: sum(hist),
+    weekly: sum(hist.filter((h) => h.date >= weekAgo)),
+    monthly: sum(hist.filter((h) => h.date >= monthAgo)),
+    yearly: sum(hist.filter((h) => h.date >= yearAgo)),
+    pr,
+    sessions: hist.length,
+  };
+}
+
+function ExerciseChart({ hist, metric }) {
+  const data = hist.slice(-12).map((h) => ({ date: formatShortDate(h.date), value: metric === "volume" ? h.volume : metric === "weight" ? h.weight : h.reps }));
+  if (data.length < 2) {
+    return <div className="h-56 flex items-center justify-center text-sm text-slate-500">Log a couple more sessions to see this trend.</div>;
+  }
+  return (
+    <ResponsiveContainer width="100%" height={224}>
+      <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+        <defs>
+          <linearGradient id="exFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#d16d94" stopOpacity={0.5} />
+            <stop offset="100%" stopColor="#d1935a" stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+        <XAxis dataKey="date" tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} />
+        <YAxis tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} width={40} />
+        <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 12 }} labelStyle={{ color: "#94a3b8" }} />
+        <Area type="monotone" dataKey="value" stroke="#d16d94" strokeWidth={2.5} fill="url(#exFill)" dot={{ r: 3, fill: "#d16d94" }} />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+function ExerciseDetailPage({ exerciseId, me, onBack, onSaveNote, onSaveInstructions }) {
+  const ex = getEx(exerciseId);
+  const hist = (me.history[exerciseId] || []).slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const stats = useMemo(() => exerciseStats(hist), [hist]);
+  const [metric, setMetric] = useState("weight");
+  const [note, setNote] = useState(me.exerciseNotes?.[exerciseId] || "");
+  const noteSaved = useRef(note);
+  const [instr, setInstr] = useState(ex?.instructions || "");
+  const instrSaved = useRef(instr);
+
+  if (!ex) {
+    return (
+      <div className="flex flex-col gap-6">
+        <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors w-fit">
+          <ArrowLeft size={16} /> Back
+        </button>
+        <EmptyState icon="❓" title="Exercise not found" sub="This exercise may have been removed from the shared library." />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors w-fit">
+        <ArrowLeft size={16} /> Back
+      </button>
+
+      <div className="flex items-center gap-4">
+        <div className={`w-16 h-16 rounded-3xl ${GRAD_DIAG} flex items-center justify-center text-3xl shadow-lg shadow-pink-400/20`}>{ex.icon}</div>
+        <div>
+          <h1 className="text-2xl font-black text-white">{ex.name}</h1>
+          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-white/5 text-slate-300 border border-white/10">{ex.muscle}</span>
+            {(ex.secondary || []).map((m) => (
+              <span key={m} className="text-[11px] font-medium px-2 py-1 rounded-full bg-white/[0.03] text-slate-500 border border-white/5">{m}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <Card className="p-5">
+        <div className={`text-xs font-semibold tracking-wider uppercase mb-2 ${GRAD_TEXT}`}>Instructions</div>
+        {ex.custom ? (
+          <textarea
+            value={instr}
+            onChange={(e) => setInstr(e.target.value)}
+            onBlur={() => { if (instrSaved.current !== instr) { onSaveInstructions(exerciseId, instr); instrSaved.current = instr; } }}
+            placeholder="How to perform this exercise — setup, execution, cues…"
+            rows={3}
+            className="w-full px-4 py-3 rounded-2xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-pink-400/50 resize-none"
+          />
+        ) : (
+          <p className="text-sm text-slate-300 leading-relaxed">{ex.instructions}</p>
+        )}
+      </Card>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatBlock icon={<Trophy size={16} className="text-amber-400" />} label="Personal record" value={stats.pr ? `${stats.pr.weight}kg` : "—"} />
+        <StatBlock icon={<Activity size={16} className="text-pink-400" />} label="Lifetime volume" value={`${stats.lifetime.toLocaleString()}kg`} />
+        <StatBlock icon={<Calendar size={16} className="text-emerald-400" />} label="This week" value={`${stats.weekly.toLocaleString()}kg`} />
+        <StatBlock icon={<BarChart3 size={16} className="text-emerald-400" />} label="This month" value={`${stats.monthly.toLocaleString()}kg`} />
+      </div>
+
+      <Card className="p-5">
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+          <SectionHeading eyebrow="Trend" title="Progress" />
+          <div className="flex gap-2">
+            {["weight", "volume", "reps"].map((m) => <Chip key={m} active={metric === m} onClick={() => setMetric(m)}>{m[0].toUpperCase() + m.slice(1)}</Chip>)}
+          </div>
+        </div>
+        <ExerciseChart hist={hist} metric={metric} />
+      </Card>
+
+      <Card className="p-5">
+        <SectionHeading eyebrow="History" title="Previous sessions" />
+        {hist.length === 0 ? (
+          <p className="text-sm text-slate-500">No sessions logged yet.</p>
+        ) : (
+          <div className="flex flex-col divide-y divide-white/5">
+            {hist.slice(-6).reverse().map((h, i) => (
+              <div key={i} className="flex items-center justify-between py-2.5 text-sm">
+                <span className="text-slate-400">{formatShortDate(h.date)}</span>
+                <span className="text-slate-300">{h.sets}×{h.reps} @ {h.weight}kg</span>
+                <span className="text-emerald-300 font-semibold">{h.volume}kg vol</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-5">
+        <SectionHeading eyebrow="Notes" title="Your notes" />
+        <textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          onBlur={() => { if (noteSaved.current !== note) { onSaveNote(exerciseId, note); noteSaved.current = note; } }}
+          placeholder="Form cues, machine settings, how it felt…"
+          rows={3}
+          className="w-full px-4 py-3 rounded-2xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50 resize-none"
+        />
+      </Card>
+    </div>
+  );
+}
+
+/* ================================ Programs ================================= */
+
+function ProgramCard({ program, onActivate, onEdit, onDuplicate, onDelete }) {
+  const workoutDays = DAY_ORDER.filter((d) => program.days[d]?.type === "workout");
+  return (
+    <Card className={`p-5 flex flex-col gap-4 ${program.active ? "ring-1 ring-pink-400/40" : ""}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="text-white font-bold truncate">{program.name}</h3>
+            {program.active && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">ACTIVE</span>}
+          </div>
+          {program.description && <p className="text-xs text-slate-400 mt-1 line-clamp-2">{program.description}</p>}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {DAY_ORDER.map((d) => (
+          <span key={d} className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold ${
+            program.days[d]?.type === "workout" ? `${GRAD} text-white` : "bg-white/5 text-slate-500"
+          }`}>{DAY_SHORT[d][0]}</span>
+        ))}
+      </div>
+      <div className="text-xs text-slate-500">{workoutDays.length} workout day{workoutDays.length !== 1 ? "s" : ""} / week</div>
+      <div className="flex flex-wrap gap-2 mt-auto pt-2 border-t border-white/5">
+        {!program.active && <GradientButton size="sm" onClick={() => onActivate(program.id)}><Zap size={14} /> Activate</GradientButton>}
+        <GhostButton className="px-3 py-1.5 text-sm" onClick={() => onEdit(program.id)}><Pencil size={13} /> Edit</GhostButton>
+        <GhostButton className="px-3 py-1.5 text-sm" onClick={() => onDuplicate(program.id)}><Copy size={13} /> Duplicate</GhostButton>
+        <GhostButton className="px-3 py-1.5 text-sm" danger ariaLabel={`Delete ${program.name}`} onClick={() => onDelete(program.id)}><Trash2 size={13} /></GhostButton>
+      </div>
+    </Card>
+  );
+}
+
+const LOAD_TYPE_LABEL = { external: "Weighted", bodyweight: "Bodyweight", cardio: "Cardio" };
+const LOAD_TYPE_BADGE_CLASS = {
+  external: "bg-sky-500/10 text-sky-300 border-sky-500/20",
+  bodyweight: "bg-emerald-500/10 text-emerald-300 border-emerald-500/20",
+  cardio: "bg-amber-500/10 text-amber-300 border-amber-500/20",
+};
+const CUSTOM_ICON_CHOICES = ["⭐", "🏋️", "🤸", "🦵", "💪", "🧘", "🚣", "🚴", "🏃", "🙆", "🧗"];
+
+function CustomExerciseForm({ onCreate, onCancel }) {
+  const [name, setName] = useState("");
+  const [muscle, setMuscle] = useState(MAIN_MUSCLE_OPTIONS[0]);
+  const [secondary, setSecondary] = useState([]);
+  const [icon, setIcon] = useState(CUSTOM_ICON_CHOICES[0]);
+  const [loadType, setLoadType] = useState("external");
+  const [bwPercent, setBwPercent] = useState(100);
+  const [instructions, setInstructions] = useState("");
+  const canSave = name.trim().length > 0;
+  const toggleSecondary = (m) => setSecondary((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
+  const secondaryOptions = [...MAIN_MUSCLE_OPTIONS.filter((m) => m !== muscle), ...MINOR_MUSCLE_OPTIONS];
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 flex flex-col gap-3 mb-3">
+      <div className="text-xs font-semibold tracking-wider uppercase text-slate-400">New custom exercise</div>
+      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Exercise name"
+        className="w-full px-3.5 py-2 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50" />
+
+      <div>
+        <div className="text-[11px] text-slate-500 mb-1.5">Main muscle group</div>
+        <div className="flex flex-wrap gap-1.5">
+          {MAIN_MUSCLE_OPTIONS.map((m) => (
+            <Chip key={m} active={muscle === m} onClick={() => { setMuscle(m); setSecondary((prev) => prev.filter((x) => x !== m)); }} className="!px-2.5 !py-1 text-xs">{m}</Chip>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[11px] text-slate-500 mb-1.5">Also works (optional, pick as many as apply)</div>
+        <div className="flex flex-wrap gap-1.5">
+          {secondaryOptions.map((m) => (
+            <Chip key={m} active={secondary.includes(m)} onClick={() => toggleSecondary(m)} className="!px-2.5 !py-1 text-xs">{m}</Chip>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[11px] text-slate-500 mb-1.5">Icon</div>
+        <div className="flex flex-wrap gap-1.5">
+          {CUSTOM_ICON_CHOICES.map((ic) => (
+            <button key={ic} type="button" onClick={() => setIcon(ic)}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center text-base border transition-colors ${icon === ic ? "border-pink-400/60 bg-pink-400/10" : "border-white/10 bg-white/5 hover:bg-white/10"}`}>
+              {ic}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[11px] text-slate-500 mb-1.5">How is it loaded?</div>
+        <div className="flex flex-wrap gap-1.5">
+          {Object.entries(LOAD_TYPE_LABEL).map(([lt, label]) => (
+            <Chip key={lt} active={loadType === lt} onClick={() => setLoadType(lt)} className="!px-2.5 !py-1 text-xs">{label}</Chip>
+          ))}
+        </div>
+        {loadType === "bodyweight" && (
+          <div className="flex items-center gap-2 mt-2.5 text-xs text-slate-400">
+            <span>Est. % of bodyweight moved</span>
+            <NumberField value={bwPercent} onChange={setBwPercent} step={5} min={5} width="w-14" label="percent of bodyweight" />
+            <span>%</span>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="text-[11px] text-slate-500 mb-1.5">Instructions (optional)</div>
+        <textarea
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          placeholder="How to perform this exercise — setup, execution, cues…"
+          rows={3}
+          className="w-full px-3.5 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50 resize-none"
+        />
+      </div>
+
+      <div className="flex gap-2 justify-end pt-1">
+        <GhostButton onClick={onCancel}>Cancel</GhostButton>
+        <GradientButton disabled={!canSave} onClick={() => onCreate({ name, muscle, secondary, icon, loadType, bwPercent, instructions })}>
+          <Plus size={14} /> Create & add
+        </GradientButton>
+      </div>
+    </div>
+  );
+}
+
+function ExercisePicker({ open, onClose, onPick, excludeIds = [], customExercises = {}, onAddCustom, onDeleteCustom, canDeleteCustom }) {
+  const [q, setQ] = useState("");
+  const [tab, setTab] = useState("All");
+  const [showCustomForm, setShowCustomForm] = useState(false);
+  if (!open) return null;
+  const excludeSet = new Set(excludeIds);
+  const list = allExercises(customExercises);
+  const filtered = list.filter((e) => {
+    const matchesTab = tab === "All" ? true : tab === "Custom" ? !!e.custom : (e.muscle === tab || MUSCLE_TO_CATEGORY[e.muscle] === tab);
+    const q_ = q.toLowerCase();
+    const matchesQ = e.name.toLowerCase().includes(q_) || e.muscle.toLowerCase().includes(q_) || (e.secondary || []).some((m) => m.toLowerCase().includes(q_));
+    return matchesTab && matchesQ;
+  });
+  const hasCustom = Object.keys(customExercises).length > 0;
+
+  return (
+    <Modal open={open} onClose={() => { setShowCustomForm(false); onClose(); }} title="Add an exercise" size="lg">
+      <div className="relative mb-3">
+        <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search exercises or muscle…"
+          className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50" />
+      </div>
+
+      <div className="flex gap-1.5 overflow-x-auto pb-2 mb-1 -mx-1 px-1">
+        {["All", ...MUSCLE_CATEGORIES, ...(hasCustom ? ["Custom"] : [])].map((m) => (
+          <button key={m} onClick={() => setTab(m)}
+            className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium border transition-all duration-200 ${
+              tab === m ? `${GRAD} text-white border-transparent shadow-md shadow-pink-400/30` : "bg-white/5 text-slate-300 border-white/10 hover:bg-white/10"
+            }`}>
+            {m}
+          </button>
+        ))}
+      </div>
+
+      {showCustomForm ? (
+        <CustomExerciseForm
+          onCancel={() => setShowCustomForm(false)}
+          onCreate={(payload) => {
+            const id = onAddCustom(payload);
+            setShowCustomForm(false);
+            onPick(id);
+            onClose();
+          }}
+        />
+      ) : (
+        <button onClick={() => setShowCustomForm(true)}
+          className="w-full flex items-center gap-2 p-2.5 mb-2 rounded-xl border border-dashed border-white/15 text-sm text-slate-300 hover:bg-white/5 hover:border-white/25 transition-colors">
+          <Plus size={15} className="text-pink-400" /> Create your own exercise
+        </button>
+      )}
+
+      {!showCustomForm && (
+        <div className="max-h-72 overflow-y-auto flex flex-col gap-1 -mx-2 px-2">
+          {filtered.map((e) => {
+            const already = excludeSet.has(e.id);
+            return (
+              <div key={e.id} className="flex items-center gap-1">
+                <button
+                  disabled={already} onClick={() => { onPick(e.id); onClose(); }}
+                  className={`flex items-center gap-3 p-2.5 rounded-xl text-left transition-colors flex-1 min-w-0 ${already ? "opacity-40 cursor-not-allowed" : "hover:bg-white/5"}`}
+                >
+                  <span className="text-xl shrink-0">{e.icon}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-white font-medium truncate">{e.name}</div>
+                    <div className="text-[11px] text-slate-500 flex items-center gap-1.5 min-w-0">
+                      <span className="truncate">{e.muscle}{e.secondary?.length ? ` · ${e.secondary.join(", ")}` : ""}</span>
+                      <span className={`shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${LOAD_TYPE_BADGE_CLASS[e.loadType] || LOAD_TYPE_BADGE_CLASS.external}`}>
+                        {LOAD_TYPE_LABEL[e.loadType] || "Weighted"}
+                      </span>
+                    </div>
+                  </div>
+                  {already && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-400 shrink-0">Added</span>}
+                </button>
+                {e.custom && onDeleteCustom && canDeleteCustom?.(e) && (
+                  <button onClick={() => onDeleteCustom(e.id)} aria-label={`Delete custom exercise ${e.name}`} className="p-2 rounded-xl hover:bg-rose-500/10 text-slate-500 hover:text-rose-300 shrink-0">
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+          {filtered.length === 0 && <p className="text-sm text-slate-500 text-center py-6">No exercises match.</p>}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, dragProps, bodyweightKg }) {
+  const ex = getEx(pex.exerciseId);
+  const isCardio = ex?.loadType === "cardio";
+  return (
+    <div {...dragProps} className="rounded-2xl bg-white/[0.04] border border-white/10 p-3.5 flex flex-col gap-3">
+      <div className="flex items-center gap-3">
+        <span className="cursor-grab text-slate-600 hover:text-slate-400 shrink-0" title="Drag to reorder"><GripVertical size={16} /></span>
+        <span className="text-xl shrink-0">{ex?.icon}</span>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm text-white font-medium truncate">{ex?.name}</div>
+          <div className="text-[11px] text-slate-500">{ex?.muscle}</div>
+        </div>
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button disabled={index === 0} onClick={() => onMove(-1)} aria-label={`Move ${ex?.name || "exercise"} up`} className="p-1.5 rounded-lg hover:bg-white/10 text-slate-500 hover:text-white disabled:opacity-20 disabled:pointer-events-none"><ChevronUp size={14} /></button>
+          <button disabled={index === total - 1} onClick={() => onMove(1)} aria-label={`Move ${ex?.name || "exercise"} down`} className="p-1.5 rounded-lg hover:bg-white/10 text-slate-500 hover:text-white disabled:opacity-20 disabled:pointer-events-none"><ChevronDown size={14} /></button>
+          <button onClick={onRemove} aria-label={`Remove ${ex?.name || "exercise"}`} className="p-1.5 rounded-lg hover:bg-rose-500/10 text-slate-500 hover:text-rose-300"><Trash2 size={14} /></button>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-400 pl-7">
+        <div className="flex items-center gap-1.5">Sets <NumberField value={pex.sets} onChange={(v) => onChange({ sets: v })} step={1} min={1} width="w-10" label="sets" /></div>
+        <div className="flex items-center gap-1.5">Reps <NumberField value={pex.reps} onChange={(v) => onChange({ reps: v })} step={1} min={1} width="w-10" label="reps" /></div>
+        {!isCardio && (
+          <div className="flex items-center gap-1.5">
+            {ex?.loadType === "bodyweight" ? "Target added wt" : "Target wt"}{" "}
+            <LoadField
+              ex={ex} weight={pex.targetWeight} addedWeight={pex.targetAddedWeight} bodyweightKg={bodyweightKg} done={false}
+              onChange={(p) => onChange({ targetWeight: p.weight, targetAddedWeight: p.addedWeight })}
+            />
+          </div>
+        )}
+        <input value={pex.notes} onChange={(e) => onChange({ notes: e.target.value })} placeholder="Notes (optional)"
+          className="flex-1 min-w-[120px] px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-600 text-xs focus:outline-none focus:ring-1 focus:ring-pink-400/50" />
+      </div>
+    </div>
+  );
+}
+
+function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, onAddCustom, onDeleteCustom, bodyweightKg, me }) {
+  const [draft, setDraft] = useState(initial);
+  const [selectedDay, setSelectedDay] = useState("mon");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const dragIndex = useRef(null);
+
+  const dayData = draft.days[selectedDay];
+
+  const setDayType = (type) => setDraft((d) => ({ ...d, days: { ...d.days, [selectedDay]: { ...d.days[selectedDay], type } } }));
+  const patchExercise = (idx, patch) => setDraft((d) => {
+    const list = d.days[selectedDay].exercises.map((e, i) => (i === idx ? { ...e, ...patch } : e));
+    return { ...d, days: { ...d.days, [selectedDay]: { ...d.days[selectedDay], exercises: list } } };
+  });
+  const removeExercise = (idx) => setDraft((d) => {
+    const list = d.days[selectedDay].exercises.filter((_, i) => i !== idx);
+    return { ...d, days: { ...d.days, [selectedDay]: { ...d.days[selectedDay], exercises: list } } };
+  });
+  const addExercise = (exerciseId) => setDraft((d) => {
+    const ex = getEx(exerciseId);
+    const base = { id: uid("pex"), exerciseId, sets: 3, reps: 10, notes: "" };
+    const pex = ex?.loadType === "bodyweight" ? { ...base, targetAddedWeight: 0 }
+      : ex?.loadType === "cardio" ? { ...base, targetWeight: 0 }
+      : { ...base, targetWeight: 20 };
+    const list = [...d.days[selectedDay].exercises, pex];
+    return { ...d, days: { ...d.days, [selectedDay]: { ...d.days[selectedDay], exercises: list } } };
+  });
+  const moveExercise = (idx, dir) => setDraft((d) => {
+    const list = [...d.days[selectedDay].exercises];
+    const j = idx + dir;
+    if (j < 0 || j >= list.length) return d;
+    [list[idx], list[j]] = [list[j], list[idx]];
+    return { ...d, days: { ...d.days, [selectedDay]: { ...d.days[selectedDay], exercises: list } } };
+  });
+  const dropReorder = (idx) => {
+    if (dragIndex.current === null || dragIndex.current === idx) return;
+    setDraft((d) => {
+      const list = [...d.days[selectedDay].exercises];
+      const [moved] = list.splice(dragIndex.current, 1);
+      list.splice(idx, 0, moved);
+      return { ...d, days: { ...d.days, [selectedDay]: { ...d.days[selectedDay], exercises: list } } };
+    });
+    dragIndex.current = null;
+  };
+
+  return (
+    <div className="flex flex-col gap-6">
+      <button onClick={onCancel} className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors w-fit">
+        <ArrowLeft size={16} /> Back to programs
+      </button>
+
+      <Card className="p-5 flex flex-col gap-3">
+        <input value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Program name"
+          className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white font-bold text-lg placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-pink-400/50" />
+        <textarea value={draft.description} onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))} placeholder="Description (optional)" rows={2}
+          className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50 resize-none" />
+      </Card>
+
+      <Card className="p-5">
+        <SectionHeading eyebrow="Weekly planner" title="Set your week" />
+        <div className="grid grid-cols-7 gap-2">
+          {DAY_ORDER.map((d) => (
+            <button key={d} onClick={() => setSelectedDay(d)}
+              className={`flex flex-col items-center gap-1.5 py-3 rounded-2xl border transition-all duration-200 ${
+                selectedDay === d ? "border-pink-400/50 bg-pink-400/10" : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
+              }`}>
+              <span className="text-[11px] font-bold text-slate-300">{DAY_SHORT[d]}</span>
+              <span className={`w-6 h-6 rounded-lg flex items-center justify-center ${draft.days[d]?.type === "workout" ? `${GRAD}` : "bg-white/10"}`}>
+                {draft.days[d]?.type === "workout" ? <Dumbbell size={12} className="text-white" /> : <span className="text-[11px]">🌙</span>}
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 mt-4">
+          <span className="text-sm text-slate-400">{DAY_LABEL[selectedDay]}:</span>
+          <Chip active={dayData.type === "workout"} onClick={() => setDayType("workout")}>Workout day</Chip>
+          <Chip active={dayData.type === "rest"} onClick={() => setDayType("rest")}>Rest day</Chip>
+        </div>
+      </Card>
+
+      {dayData.type === "workout" && (
+        <Card className="p-5">
+          <SectionHeading eyebrow="Workout builder" title={`${DAY_LABEL[selectedDay]} exercises`}
+            right={<GradientButton size="sm" onClick={() => setPickerOpen(true)}><Plus size={14} /> Add exercise</GradientButton>} />
+          {dayData.exercises.length === 0 ? (
+            <p className="text-sm text-slate-500 py-6 text-center">No exercises yet — add your first one above.</p>
+          ) : (
+            <div className="flex flex-col gap-2.5">
+              {dayData.exercises.map((pex, i) => (
+                <BuilderExerciseRow
+                  key={pex.id} pex={pex} index={i} total={dayData.exercises.length} bodyweightKg={bodyweightKg}
+                  onChange={(p) => patchExercise(i, p)} onRemove={() => removeExercise(i)} onMove={(dir) => moveExercise(i, dir)}
+                  dragProps={{
+                    draggable: true,
+                    onDragStart: () => (dragIndex.current = i),
+                    onDragOver: (e) => e.preventDefault(),
+                    onDrop: () => dropReorder(i),
+                  }}
+                />
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+
+      <ExercisePicker
+        open={pickerOpen} onClose={() => setPickerOpen(false)} onPick={addExercise} excludeIds={dayData.exercises.map((e) => e.exerciseId)}
+        customExercises={customExercises} onAddCustom={onAddCustom} onDeleteCustom={onDeleteCustom}
+        canDeleteCustom={(e) => !e.createdBy || e.createdBy === me?.id || me?.role === "admin"}
+      />
+
+      <div className="flex items-center justify-between gap-3 pb-4">
+        {onDelete ? <GhostButton danger onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> Delete program</GhostButton> : <span />}
+        <div className="flex gap-3">
+          <GhostButton onClick={onCancel}>Cancel</GhostButton>
+          <GradientButton onClick={() => onSave(draft)} disabled={!draft.name.trim()}><Save size={16} /> Save program</GradientButton>
+        </div>
+      </div>
+
+      <Modal
+        open={confirmDelete} onClose={() => setConfirmDelete(false)} title="Delete this program?"
+        footer={<>
+          <GhostButton onClick={() => setConfirmDelete(false)}>Cancel</GhostButton>
+          <GhostButton danger onClick={onDelete}>Delete</GhostButton>
+        </>}
+      >
+        {`"${draft.name || "This program"}" and its full weekly plan will be permanently removed. This can't be undone.`}
+      </Modal>
+    </div>
+  );
+}
+
+function ProgramsPage({ me, programs, onActivate, onSaveProgram, onDuplicate, onDelete, customExercises, onAddCustom, onDeleteCustom }) {
+  const [editingId, setEditingId] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const mine = Object.values(programs).filter((p) => p.ownerId === me.id);
+
+  if (creating || editingId) {
+    const initial = creating ? { id: uid("prog"), ownerId: me.id, name: "", description: "", active: mine.length === 0, days: emptyWeek() } : programs[editingId];
+    return (
+      <ProgramEditor
+        initial={initial}
+        onCancel={() => { setCreating(false); setEditingId(null); }}
+        onDelete={editingId ? () => { onDelete(editingId); setEditingId(null); } : null}
+        onSave={(draft) => { onSaveProgram(draft); setCreating(false); setEditingId(null); }}
+        customExercises={customExercises} onAddCustom={onAddCustom} onDeleteCustom={onDeleteCustom} bodyweightKg={me.bodyweightKg} me={me}
+      />
+    );
+  }
+
+  const deleteTarget = confirmDeleteId ? programs[confirmDeleteId] : null;
+
+  return (
+    <div className="flex flex-col gap-6">
+      <SectionHeading eyebrow="Build" title="Your programs" right={<GradientButton onClick={() => setCreating(true)}><Plus size={16} /> New program</GradientButton>} />
+      {mine.length === 0 ? (
+        <EmptyState icon="📋" title="No programs yet" sub="Create your first program, plan your week, and activate it to start training." action={<GradientButton onClick={() => setCreating(true)}><Plus size={16} /> Create a program</GradientButton>} />
+      ) : (
+        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
+          {mine.map((p) => (
+            <ProgramCard key={p.id} program={p} onActivate={onActivate} onEdit={setEditingId} onDuplicate={onDuplicate} onDelete={setConfirmDeleteId} />
+          ))}
+        </div>
+      )}
+
+      <Modal
+        open={!!deleteTarget} onClose={() => setConfirmDeleteId(null)} title="Delete this program?"
+        footer={<>
+          <GhostButton onClick={() => setConfirmDeleteId(null)}>Cancel</GhostButton>
+          <GhostButton danger onClick={() => { onDelete(confirmDeleteId); setConfirmDeleteId(null); }}>Delete</GhostButton>
+        </>}
+      >
+        {`"${deleteTarget?.name || "This program"}" and its full weekly plan will be permanently removed. This can't be undone.`}
+      </Modal>
+    </div>
+  );
+}
+
+/* ================================ Members =================================== */
+
+function PendingRow({ m, onApprove, onReject }) {
+  return (
+    <div className="flex items-center gap-3 p-3 rounded-2xl bg-amber-500/5 border border-amber-500/20">
+      <Avatar name={m.name} swatch={m.avatar} photoUrl={m.avatarUrl} size="sm" />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-white font-semibold truncate">{m.name}</div>
+        <div className="text-[11px] text-amber-400">Requested {formatShortDate(m.joinedAt)}</div>
+      </div>
+      <button onClick={() => onReject(m.id)} aria-label={`Reject ${m.name}`} className="p-2 rounded-xl bg-white/5 hover:bg-rose-500/15 text-slate-400 hover:text-rose-300 transition-colors" title="Reject"><UserX size={16} /></button>
+      <button onClick={() => onApprove(m.id)} aria-label={`Approve ${m.name}`} className="p-2 rounded-xl bg-white/5 hover:bg-emerald-500/15 text-slate-400 hover:text-emerald-300 transition-colors" title="Approve"><UserCheck size={16} /></button>
+    </div>
+  );
+}
+
+function MemberRow({ m, me, rank, sortKey, onOpen, programs }) {
+  const prog = m.activeProgramId ? programs[m.activeProgramId] : null;
+  return (
+    <button onClick={() => onOpen(m.id)} className="w-full flex items-center gap-3.5 p-3.5 rounded-2xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 hover:border-white/15 transition-all duration-200 text-left">
+      <span className={`w-6 text-sm font-bold shrink-0 ${rank === 0 ? "text-amber-400" : rank === 1 ? "text-slate-300" : rank === 2 ? "text-orange-400" : "text-slate-600"}`}>{rank + 1}</span>
+      <Avatar name={m.name} swatch={m.avatar} photoUrl={m.avatarUrl} />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-white font-semibold truncate flex items-center gap-1.5">
+          {m.id === me.id ? "You" : m.name}
+          {m.role === "admin" && <ShieldCheck size={13} className="text-emerald-400" />}
+        </div>
+        <div className="text-[11px] text-slate-500 truncate">{prog ? prog.name : "No active program"}</div>
+      </div>
+      <div className="hidden sm:flex items-center gap-1.5 text-xs text-orange-400 shrink-0"><Flame size={13} /> {m.streak}</div>
+      <div className="flex items-center gap-1.5 text-xs text-slate-300 font-semibold shrink-0 w-16 justify-end">
+        <Star size={13} className="text-amber-400" /> {sortKey === "streak" ? m.streak : m.xp}
+      </div>
+      <ChevronRight size={16} className="text-slate-600 shrink-0" />
+    </button>
+  );
+}
+
+function MembersPage({ me, members, programs, onOpen, onApprove, onReject, onRefresh, refreshing }) {
+  const [sortKey, setSortKey] = useState("xp");
+  const pending = Object.values(members).filter((m) => m.status === "pending");
+  const approved = Object.values(members).filter((m) => m.status === "approved").sort((a, b) => sortKey === "xp" ? b.xp - a.xp : b.streak - a.streak);
+
+  return (
+    <div className="flex flex-col gap-6">
+      {me.role === "admin" && pending.length > 0 && (
+        <Card className="p-5 border-amber-500/20">
+          <SectionHeading eyebrow="Admin" title={`Pending approval (${pending.length})`} />
+          <div className="flex flex-col gap-2.5">
+            {pending.map((m) => <PendingRow key={m.id} m={m} onApprove={onApprove} onReject={onReject} />)}
+          </div>
+        </Card>
+      )}
+
+      <SectionHeading eyebrow="Crew" title="Members" right={
+        <div className="flex items-center gap-2">
+          <Chip active={sortKey === "xp"} onClick={() => setSortKey("xp")}>By XP</Chip>
+          <Chip active={sortKey === "streak"} onClick={() => setSortKey("streak")}>By streak</Chip>
+          <button
+            onClick={onRefresh} disabled={refreshing} aria-label="Refresh members list"
+            className="w-8 h-8 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 hover:text-white flex items-center justify-center transition-colors disabled:opacity-50"
+            title="Refresh"
+          >
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+          </button>
+        </div>
+      } />
+      <div className="flex flex-col gap-2.5">
+        {approved.map((m, i) => <MemberRow key={m.id} m={m} me={me} rank={i} sortKey={sortKey} onOpen={onOpen} programs={programs} />)}
+      </div>
+    </div>
+  );
+}
+
+/* ============================ Member profile ================================ */
+
+function aggregateVolumeByDate(member) {
+  const map = {};
+  Object.values(member.history || {}).forEach((arr) => arr.forEach((h) => { map[h.date] = (map[h.date] || 0) + h.volume; }));
+  return Object.entries(map).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).slice(-10).map(([date, vol]) => ({ date: formatShortDate(date), vol }));
+}
+
+function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
+  const lvl = levelInfo(member.xp);
+  const program = member.activeProgramId ? programs[member.activeProgramId] : null;
+  const volData = useMemo(() => aggregateVolumeByDate(member), [member]);
+  const recentDays = useMemo(() => Object.entries(member.worklogs || {}).filter(([, v]) => v.completedAt).sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0)).slice(0, 6), [member]);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors w-fit">
+        <ArrowLeft size={16} /> Back to members
+      </button>
+
+      <Card className="p-6 flex flex-wrap items-center gap-6">
+        <Avatar name={member.name} swatch={member.avatar} photoUrl={member.avatarUrl} size="lg" ring />
+        <div className="flex-1 min-w-[180px]">
+          <h1 className="text-2xl font-black text-white flex items-center gap-2">{member.name}{member.role === "admin" && <ShieldCheck size={18} className="text-emerald-400" />}</h1>
+          <span className="inline-flex items-center gap-1.5 mt-1.5 text-xs font-semibold px-2.5 py-1 rounded-full bg-white/5 text-slate-300 border border-white/10">
+            {goalInfo(member.goal).icon} {goalInfo(member.goal).label}
+          </span>
+        </div>
+        <div className="flex items-center gap-6">
+          <div className="flex flex-col items-center"><span className="text-xl font-bold text-orange-400 flex items-center gap-1"><Flame size={18} />{member.streak}</span><span className="text-[10px] text-slate-500">streak</span></div>
+          <div className="flex flex-col items-center"><span className="text-xl font-bold text-amber-300 flex items-center gap-1"><Star size={18} />{lvl.level}</span><span className="text-[10px] text-slate-500">level</span></div>
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatBlock icon={<Activity size={16} className="text-pink-400" />} label="Total volume" value={`${member.totalVolume.toLocaleString()}kg`} />
+        <StatBlock icon={<ListChecks size={16} className="text-emerald-400" />} label="Workouts done" value={member.totalWorkouts} />
+        <StatBlock icon={<Trophy size={16} className="text-amber-400" />} label="Longest streak" value={`${member.longestStreak}d`} />
+        <StatBlock icon={<TrendingUp size={16} className="text-emerald-400" />} label="Personal records" value={member.prCount} />
+      </div>
+
+      {program && (
+        <Card className="p-5">
+          <SectionHeading eyebrow="Training" title={program.name} />
+          {program.description && <p className="text-sm text-slate-400 mb-3">{program.description}</p>}
+          <div className="flex flex-wrap gap-1.5">
+            {DAY_ORDER.map((d) => (
+              <span key={d} className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold ${program.days[d]?.type === "workout" ? `${GRAD} text-white` : "bg-white/5 text-slate-500"}`}>{DAY_SHORT[d][0]}</span>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <Card className="p-5">
+        <SectionHeading eyebrow="Trend" title="Volume over time" />
+        {volData.length < 2 ? <p className="text-sm text-slate-500">Not enough sessions yet to chart.</p> : (
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={volData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+              <XAxis dataKey="date" tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} width={40} />
+              <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 12 }} />
+              <Bar dataKey="vol" fill="#d1935a" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+      </Card>
+
+      <Card className="p-5">
+        <SectionHeading eyebrow="Badges" title="Achievements" />
+        <AchievementsGrid unlockedIds={member.unlocked || []} />
+      </Card>
+
+      {recentDays.length > 0 && (
+        <Card className="p-5">
+          <SectionHeading eyebrow="History" title="Recent sessions" />
+          <div className="flex flex-col divide-y divide-white/5">
+            {recentDays.map(([date, log]) => (
+              <div key={date} className="flex items-center justify-between py-2.5 text-sm">
+                <span className="text-slate-400">{formatShortDate(date)}</span>
+                <span className="text-slate-300">{Object.keys(log.exercises || {}).length} exercises</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {me.role === "admin" && member.id !== me.id && (
+        <Card className="p-5 border-rose-500/20">
+          <SectionHeading eyebrow="Admin" title="Danger zone" />
+          {!confirmRemove ? (
+            <GhostButton danger onClick={() => setConfirmRemove(true)}><Trash2 size={14} /> Remove member</GhostButton>
+          ) : (
+            <div className="flex items-center gap-3">
+              <p className="text-sm text-slate-400 flex-1">Remove {member.name} from PRISM? This can't be undone.</p>
+              <GhostButton onClick={() => setConfirmRemove(false)}>Cancel</GhostButton>
+              <GhostButton danger onClick={() => onRemove(member.id)}>Confirm remove</GhostButton>
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ================================= Profile =================================== */
+
+// Resizes/compresses an image file client-side before it's stored, so avatars and
+// progress photos stay well under storage limits regardless of the original camera
+// resolution. Returns a JPEG data URL.
+function readAndResizeImage(file, maxDim = 900, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDim) { height = Math.round(height * (maxDim / width)); width = maxDim; }
+        else if (height >= width && height > maxDim) { width = Math.round(width * (maxDim / height)); height = maxDim; }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("Could not read image"));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("Could not read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function AvatarUploadButton({ onUpload }) {
+  const inputRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (inputRef.current) inputRef.current.value = "";
+    if (!file) return;
+    setBusy(true);
+    try {
+      const dataUrl = await readAndResizeImage(file, 400, 0.85);
+      onUpload(dataUrl);
+    } catch (err) {
+      console.error("Avatar upload failed:", err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <input ref={inputRef} type="file" accept="image/*" onChange={handleFile} className="hidden" />
+      <button
+        type="button" onClick={() => inputRef.current?.click()} disabled={busy}
+        aria-label="Change avatar photo" title="Change avatar photo"
+        className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-slate-900 border border-white/20 hover:bg-white/10 text-white flex items-center justify-center transition-colors disabled:opacity-60"
+      >
+        {busy ? <Loader2 size={12} className="animate-spin" /> : <Camera size={12} />}
+      </button>
+    </>
+  );
+}
+
+// Lets the user pick one of the preset goals, or type their own free-text goal.
+// Custom goals are stored as plain strings (see goalInfo()) instead of a preset id.
+function GoalPicker({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [customText, setCustomText] = useState("");
+  const ref = useRef(null);
+  const display = goalInfo(value);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const pick = (v) => { onChange(v); setOpen(false); };
+  const submitCustom = () => {
+    const t = customText.trim();
+    if (!t) return;
+    onChange(t);
+    setCustomText("");
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button" onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm hover:bg-white/10 transition-colors"
+      >
+        <span>{display.icon}</span>
+        <span className="font-medium">{display.label}</span>
+        <ChevronDown size={14} className={`text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-2 w-64 rounded-2xl bg-slate-900 border border-white/10 shadow-xl p-2 flex flex-col gap-1">
+          {GOALS.map((g) => (
+            <button
+              key={g.id} type="button" onClick={() => pick(g.id)}
+              className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-left transition-colors ${value === g.id ? `${GRAD} text-white` : "text-slate-300 hover:bg-white/5"}`}
+            >
+              <span>{g.icon}</span> {g.label}
+            </button>
+          ))}
+          <div className="border-t border-white/10 mt-1 pt-2 flex items-center gap-1.5">
+            <input
+              value={customText} onChange={(e) => setCustomText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitCustom(); } }}
+              placeholder="Write your own…"
+              className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-xs placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-pink-400/50"
+            />
+            <button
+              type="button" onClick={submitCustom} disabled={!customText.trim()} aria-label="Use custom goal"
+              className="w-7 h-7 shrink-0 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 disabled:opacity-40 flex items-center justify-center"
+            >
+              <Check size={13} />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function isoFromYMD(y, mIdx, d) {
+  return `${y}-${String(mIdx + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+// A real month-grid calendar (not just a heatmap strip): navigate between months,
+// and click any date to jump to that day's workout / see what was logged.
+const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function MonthCalendar({ me, program, onSelectDate }) {
+  const todayIso = todayISO();
+  const [cursor, setCursor] = useState(() => {
+    const t = isoToDate(todayIso);
+    return { y: t.getFullYear(), m: t.getMonth() };
+  });
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerYear, setPickerYear] = useState(cursor.y);
+  const pickerRef = useRef(null);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onDocClick = (e) => { if (pickerRef.current && !pickerRef.current.contains(e.target)) setPickerOpen(false); };
+    const onEsc = (e) => { if (e.key === "Escape") setPickerOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => { document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onEsc); };
+  }, [pickerOpen]);
+
+  const openPicker = () => { setPickerYear(cursor.y); setPickerOpen((v) => !v); };
+  const jumpToMonth = (mIdx) => { setCursor({ y: pickerYear, m: mIdx }); setPickerOpen(false); };
+  const jumpToToday = () => { const t = isoToDate(todayIso); setCursor({ y: t.getFullYear(), m: t.getMonth() }); setPickerOpen(false); };
+
+  const monthLabel = new Date(cursor.y, cursor.m, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const daysInMonth = new Date(cursor.y, cursor.m + 1, 0).getDate();
+  const firstWeekday = (new Date(cursor.y, cursor.m, 1).getDay() + 6) % 7; // 0 = Monday
+
+  const cells = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const statusFor = (iso) => {
+    const log = me.worklogs[iso];
+    if (log?.completedAt) {
+      const vol = Object.values(log.exercises || {}).reduce((s, e) => s + volumeOf(e.sets, e.reps, e.weight), 0);
+      if (vol > 1500) return "logged-high";
+      if (vol > 600) return "logged-mid";
+      return "logged-low";
+    }
+    const key = dayKeyForISO(iso);
+    if (program?.days?.[key]?.type === "rest" || !program) return "rest";
+    if (iso > todayIso) return "future";
+    // Today's own scheduled workout isn't "missed" until the day is actually
+    // over — it just hasn't been logged yet. Give it a distinct pending state
+    // instead of lumping it in with genuinely missed past days.
+    if (iso === todayIso) return "today-pending";
+    if (program?.days?.[key]?.type === "workout") return "missed";
+    return "none";
+  };
+
+  const cellClass = {
+    "logged-high": `${GRAD} text-white border-transparent`,
+    "logged-mid": "bg-pink-400/50 text-white border-transparent",
+    "logged-low": "bg-pink-400/25 text-white border-transparent",
+    rest: "bg-white/5 text-slate-400 border-white/5",
+    missed: "bg-rose-500/10 text-rose-300/80 border-rose-500/10",
+    "today-pending": "bg-amber-400/10 text-amber-200 border-amber-400/30",
+    future: "bg-transparent text-slate-600 border-white/5",
+    none: "bg-white/[0.03] text-slate-500 border-white/5",
+  };
+
+  const goPrev = () => setCursor((c) => { const d = new Date(c.y, c.m - 1, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+  const goNext = () => setCursor((c) => { const d = new Date(c.y, c.m + 1, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3 relative">
+        <button onClick={goPrev} aria-label="Previous month" className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center">
+          <ChevronLeft size={15} />
+        </button>
+        <button
+          onClick={openPicker}
+          aria-haspopup="dialog"
+          aria-expanded={pickerOpen}
+          className="text-sm font-semibold text-white px-2 py-1 rounded-lg hover:bg-white/5 transition-colors"
+        >
+          {monthLabel}
+        </button>
+        <button onClick={goNext} aria-label="Next month" className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center">
+          <ChevronRight size={15} />
+        </button>
+
+        {pickerOpen && (
+          <div
+            ref={pickerRef}
+            role="dialog"
+            aria-label="Jump to month"
+            className="absolute top-full mt-2 left-1/2 -translate-x-1/2 z-20 w-64 rounded-2xl border border-white/10 bg-slate-900 shadow-2xl shadow-black/40 p-3"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <button
+                onClick={() => setPickerYear((y) => y - 1)}
+                aria-label="Previous year"
+                className="w-7 h-7 rounded-full bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center"
+              >
+                <ChevronLeft size={13} />
+              </button>
+              <span className="text-sm font-semibold text-white">{pickerYear}</span>
+              <button
+                onClick={() => setPickerYear((y) => y + 1)}
+                aria-label="Next year"
+                className="w-7 h-7 rounded-full bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center"
+              >
+                <ChevronRight size={13} />
+              </button>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5 mb-3">
+              {MONTH_SHORT.map((mLabel, mIdx) => {
+                const isSelected = pickerYear === cursor.y && mIdx === cursor.m;
+                return (
+                  <button
+                    key={mLabel}
+                    onClick={() => jumpToMonth(mIdx)}
+                    className={`text-xs font-medium rounded-lg py-2 transition-colors ${
+                      isSelected ? `${GRAD} text-white` : "bg-white/[0.03] text-slate-300 hover:bg-white/10"
+                    }`}
+                  >
+                    {mLabel}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={jumpToToday}
+              className="w-full text-xs font-semibold text-center text-pink-300 hover:text-pink-200 py-1.5 rounded-lg hover:bg-white/5 transition-colors"
+            >
+              Today
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="grid grid-cols-7 gap-1.5 text-center text-[10px] text-slate-500 mb-1.5">
+        {DAY_ORDER.map((d) => <span key={d}>{DAY_SHORT[d]}</span>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1.5">
+        {cells.map((d, i) => {
+          if (!d) return <div key={`b${i}`} />;
+          const iso = isoFromYMD(cursor.y, cursor.m, d);
+          const status = statusFor(iso);
+          const isToday = iso === todayIso;
+          return (
+            <button
+              key={iso} onClick={() => onSelectDate(iso)} aria-label={`View ${formatNiceDate(iso)}`}
+              className={`aspect-square rounded-xl border text-xs font-semibold flex items-center justify-center transition-transform hover:scale-105 ${cellClass[status]} ${isToday ? "ring-2 ring-white/50" : ""}`}
+            >
+              {d}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Trigger button only. The confirm/note modal is rendered separately at the
+// top level of ProfilePage (see PhotoUploadPreviewModal) so it isn't nested
+// inside a backdrop-blur Card, which would trap its stacking context and let
+// later Cards (e.g. the admin banner) paint on top of it.
+function PhotoUploadButton({ busy, onPick, inputRef, onFile }) {
+  return (
+    <>
+      <input ref={inputRef} type="file" accept="image/*" onChange={onFile} className="hidden" />
+      <GradientButton onClick={onPick} disabled={busy}>
+        {busy ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />} {busy ? "Processing…" : "Add progress photo"}
+      </GradientButton>
+    </>
+  );
+}
+
+function PhotoUploadPreviewModal({ pendingUrl, note, setNote, onSave, onCancel }) {
+  useLockBodyScroll(true);
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-sm" onClick={onCancel}>
+      <div className="w-full max-w-lg max-h-[85dvh] min-h-0 overflow-y-auto bg-slate-900 border border-white/10 rounded-3xl p-6 flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+        <SectionHeading eyebrow="Transformation" title="Add progress photo" />
+        <img src={pendingUrl} alt="New progress photo preview" className="w-full max-h-[40vh] object-contain rounded-2xl border border-white/10 bg-black/30" />
+        <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">Note (optional)</label>
+          <textarea
+            value={note} onChange={(e) => setNote(e.target.value)} rows={2} autoFocus
+            placeholder="How are you feeling? Anything you noticed…"
+            className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-pink-400/50 resize-none"
+          />
+        </div>
+        <div className="flex gap-2 justify-end">
+          <GhostButton onClick={onCancel}>Cancel</GhostButton>
+          <GradientButton onClick={onSave}><Save size={14} /> Save photo</GradientButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Fullscreen viewer for a progress photo: click-to-zoom, download, prev/next
+// between photos, and an editable note shown under the date.
+function PhotoLightbox({ photos, index, onIndex, onClose, onDelete, onUpdateNote }) {
+  const [zoomed, setZoomed] = useState(false);
+  const [editingNote, setEditingNote] = useState(false);
+  const [noteDraft, setNoteDraft] = useState("");
+  const photo = photos[index];
+  useLockBodyScroll(true);
+
+  useEffect(() => {
+    setZoomed(false);
+    setEditingNote(false);
+    setNoteDraft(photo?.note || "");
+  }, [photo?.id]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft" && index > 0) onIndex(index - 1);
+      else if (e.key === "ArrowRight" && index < photos.length - 1) onIndex(index + 1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [index, photos.length, onClose, onIndex]);
+
+  if (!photo) return null;
+
+  const download = () => {
+    const a = document.createElement("a");
+    a.href = photo.dataUrl;
+    a.download = `progress-${photo.date}.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-sm" onClick={onClose}>
+      <div className="relative w-full max-w-lg max-h-full min-h-0 flex flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between w-full">
+          <span className="text-sm text-slate-300 font-semibold">{formatNiceDate(photo.date)}</span>
+          <div className="flex items-center gap-2">
+            <button onClick={download} aria-label="Download photo" title="Download" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center">
+              <Download size={15} />
+            </button>
+            <button onClick={onClose} aria-label="Close" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        <div className="relative w-full flex items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-black/40" style={{ maxHeight: "56vh" }}>
+          {index > 0 && (
+            <button onClick={() => onIndex(index - 1)} aria-label="Previous photo" className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-slate-950/70 hover:bg-slate-950 text-white flex items-center justify-center z-10">
+              <ChevronLeft size={18} />
+            </button>
+          )}
+          <img
+            src={photo.dataUrl} alt={`Progress photo from ${photo.date}`}
+            onClick={() => setZoomed((z) => !z)}
+            className={`max-h-[56vh] transition-transform duration-300 ${zoomed ? "scale-[1.8] cursor-zoom-out" : "cursor-zoom-in"}`}
+          />
+          {index < photos.length - 1 && (
+            <button onClick={() => onIndex(index + 1)} aria-label="Next photo" className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-slate-950/70 hover:bg-slate-950 text-white flex items-center justify-center z-10">
+              <ChevronRight size={18} />
+            </button>
+          )}
+        </div>
+        <p className="text-[11px] text-slate-500 -mt-1.5">Tap the photo to zoom</p>
+
+        <div className="w-full">
+          {editingNote ? (
+            <div className="flex flex-col gap-2">
+              <textarea
+                value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} rows={2} autoFocus placeholder="Add a note about this photo…"
+                className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-pink-400/50 resize-none"
+              />
+              <div className="flex gap-2 justify-end">
+                <GhostButton onClick={() => { setNoteDraft(photo.note || ""); setEditingNote(false); }}>Cancel</GhostButton>
+                <GradientButton size="sm" onClick={() => { onUpdateNote(photo.id, noteDraft.trim()); setEditingNote(false); }}><Save size={14} /> Save note</GradientButton>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setEditingNote(true)} className="w-full text-left px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/5 hover:border-white/10 transition-colors">
+              {photo.note ? (
+                <span className="text-sm text-slate-300">{photo.note}</span>
+              ) : (
+                <span className="text-sm text-slate-500 flex items-center gap-1.5"><Pencil size={12} /> Add a note</span>
+              )}
+            </button>
+          )}
+        </div>
+
+        <GhostButton danger onClick={() => { onDelete(photo.id); onClose(); }} className="w-fit"><Trash2 size={14} /> Delete photo</GhostButton>
+      </div>
+    </div>
+  );
+}
+
+function ProfilePage({ me, programs, photos, onUpdate, onAddPhoto, onDeletePhoto, onUpdatePhotoNote, onSignOut, goTo, onSelectDate }) {
+  const [name, setName] = useState(me.name);
+  const lvl = levelInfo(me.xp);
+  const program = me.activeProgramId ? programs[me.activeProgramId] : null;
+  const sortedPhotos = [...photos].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const [compare, setCompare] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(null);
+
+  const photoInputRef = useRef(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [pendingPhotoUrl, setPendingPhotoUrl] = useState(null);
+  const [pendingPhotoNote, setPendingPhotoNote] = useState("");
+
+  const handlePhotoFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (photoInputRef.current) photoInputRef.current.value = "";
+    if (!file) return;
+    setPhotoBusy(true);
+    try {
+      const dataUrl = await readAndResizeImage(file, 1000, 0.85);
+      setPendingPhotoUrl(dataUrl);
+      setPendingPhotoNote("");
+    } catch (err) {
+      console.error("Photo upload failed:", err);
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
+
+  const savePendingPhoto = () => {
+    onAddPhoto(pendingPhotoUrl, pendingPhotoNote.trim());
+    setPendingPhotoUrl(null);
+    setPendingPhotoNote("");
+  };
+
+  return (
+    <div className="flex flex-col gap-6">
+      <SectionHeading eyebrow="You" title="Profile" />
+
+      <Card className="p-6 flex flex-col gap-5">
+        <div className="flex items-center gap-5 flex-wrap">
+          <div className="relative shrink-0">
+            <Avatar name={me.name} swatch={me.avatar} photoUrl={me.avatarUrl} size="lg" ring />
+            <AvatarUploadButton onUpload={(dataUrl) => onUpdate({ avatarUrl: dataUrl })} />
+          </div>
+          <div className="flex-1 min-w-[200px] flex flex-col gap-2">
+            <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Display name</label>
+            <div className="flex gap-2">
+              <input value={name} onChange={(e) => setName(e.target.value)} className="flex-1 px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-pink-400/50" />
+              {name !== me.name && <GradientButton size="sm" onClick={() => onUpdate({ name })}><Save size={14} /> Save</GradientButton>}
+            </div>
+          </div>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Workout goal</label>
+          <GoalPicker value={me.goal} onChange={(v) => onUpdate({ goal: v })} />
+        </div>
+        <div className="grid grid-cols-3 gap-2 sm:gap-5">
+          <div>
+            <label className="text-[10px] sm:text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Bodyweight</label>
+            <div className="flex items-center gap-1.5 sm:gap-3">
+              <NumberField value={me.bodyweightKg ?? DEFAULT_BODYWEIGHT_KG} onChange={(v) => onUpdate({ bodyweightKg: v })} step={1} min={20} width="w-12 sm:w-20" label="bodyweight in kilograms" />
+              <span className="text-xs sm:text-sm text-slate-400">kg</span>
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] sm:text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Height</label>
+            <div className="flex items-center gap-1.5 sm:gap-3">
+              <NumberField value={me.heightCm ?? DEFAULT_HEIGHT_CM} onChange={(v) => onUpdate({ heightCm: v })} step={1} min={100} width="w-12 sm:w-20" label="height in centimeters" />
+              <span className="text-xs sm:text-sm text-slate-400">cm</span>
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] sm:text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Age</label>
+            <div className="flex items-center gap-1.5 sm:gap-3">
+              <NumberField value={me.age ?? DEFAULT_AGE} onChange={(v) => onUpdate({ age: v })} step={1} min={10} width="w-12 sm:w-20" label="age in years" />
+              <span className="text-xs sm:text-sm text-slate-400">yrs</span>
+            </div>
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-500 -mt-2">Bodyweight is used to estimate the load on bodyweight exercises like push-ups and pull-ups, so they show up on your volume and PR charts alongside weighted lifts.</p>
+      </Card>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatBlock icon={<Activity size={16} className="text-pink-400" />} label="Total volume" value={`${me.totalVolume.toLocaleString()}kg`} />
+        <StatBlock icon={<Star size={16} className="text-amber-400" />} label={`Level ${lvl.level} · XP`} value={me.xp} />
+        <StatBlock icon={<Flame size={16} className="text-orange-400" />} label="Current streak" value={`${me.streak}d`} />
+        <StatBlock icon={<Trophy size={16} className="text-emerald-400" />} label="Longest streak" value={`${me.longestStreak}d`} />
+      </div>
+
+      <Card className="p-5">
+        <SectionHeading eyebrow="Consistency" title="Workout calendar" />
+        <MonthCalendar me={me} program={program} onSelectDate={onSelectDate} />
+        <div className="flex flex-wrap items-center gap-3 mt-3 text-[11px] text-slate-500">
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-[4px] bg-white/[0.03]" /> No session</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-[4px] bg-white/5" /> Rest day</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-[4px] bg-amber-400/10 border border-amber-400/30" /> Today</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-[4px] bg-rose-500/10" /> Missed</span>
+          <span className="flex items-center gap-1"><span className={`w-2.5 h-2.5 rounded-[4px] ${GRAD}`} /> Workout logged</span>
+        </div>
+        <p className="text-[11px] text-slate-500 mt-2">Tap any date to jump to that day's workout.</p>
+      </Card>
+
+      <Card className="p-5">
+        <SectionHeading eyebrow="Badges" title="Achievements" />
+        <AchievementsGrid unlockedIds={me.unlocked || []} />
+      </Card>
+
+      <Card className="p-5">
+        <SectionHeading
+          eyebrow="Transformation" title="Progress photos"
+          right={
+            <PhotoUploadButton
+              busy={photoBusy} inputRef={photoInputRef}
+              onPick={() => photoInputRef.current?.click()} onFile={handlePhotoFile}
+            />
+          }
+        />
+        {sortedPhotos.length === 0 ? (
+          <p className="text-sm text-slate-500 py-4">Upload your first photo to start tracking your transformation over time.</p>
+        ) : (
+          <>
+            {sortedPhotos.length >= 2 && (
+              <Chip active={compare} onClick={() => setCompare((c) => !c)} className="mb-4">{compare ? "Show all" : "Compare first vs. latest"}</Chip>
+            )}
+            {compare && sortedPhotos.length >= 2 ? (
+              <div className="grid grid-cols-2 gap-4">
+                {[0, sortedPhotos.length - 1].map((idx) => {
+                  const p = sortedPhotos[idx];
+                  return (
+                    <div key={p.id} className="flex flex-col gap-2 cursor-pointer" onClick={() => setLightboxIndex(idx)}>
+                      <img src={p.dataUrl} className="w-full aspect-[3/4] object-cover rounded-2xl border border-white/10 hover:border-white/25 transition-colors" />
+                      <span className="text-xs text-slate-400 text-center">{idx === 0 ? "First" : "Latest"} · {formatShortDate(p.date)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex gap-3 overflow-x-auto pb-1">
+                {sortedPhotos.map((p, i) => (
+                  <div key={p.id} className="shrink-0 w-28 group cursor-pointer" onClick={() => setLightboxIndex(i)}>
+                    <div className="relative">
+                      <img src={p.dataUrl} className="w-28 h-36 object-cover rounded-2xl border border-white/10 group-hover:border-white/25 transition-colors" />
+                      <span className="absolute bottom-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-slate-950/70 text-slate-200">{formatShortDate(p.date)}</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDeletePhoto(p.id); }}
+                        aria-label={`Delete photo from ${formatShortDate(p.date)}`}
+                        className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-slate-950/70 text-slate-300 hover:text-rose-300 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <X size={11} />
+                      </button>
+                    </div>
+                    {p.note && <p className="text-[10px] text-slate-400 mt-1 leading-snug line-clamp-2">{p.note}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </Card>
+
+      {lightboxIndex !== null && (
+        <PhotoLightbox
+          photos={sortedPhotos} index={lightboxIndex}
+          onIndex={setLightboxIndex} onClose={() => setLightboxIndex(null)}
+          onDelete={onDeletePhoto} onUpdateNote={onUpdatePhotoNote}
+        />
+      )}
+
+      {pendingPhotoUrl && (
+        <PhotoUploadPreviewModal
+          pendingUrl={pendingPhotoUrl} note={pendingPhotoNote} setNote={setPendingPhotoNote}
+          onSave={savePendingPhoto} onCancel={() => setPendingPhotoUrl(null)}
+        />
+      )}
+
+      {me.role === "admin" && (
+        <Card className="p-5 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <ShieldCheck size={20} className="text-emerald-400" />
+            <div>
+              <div className="text-sm text-white font-semibold">You're the admin</div>
+              <div className="text-xs text-slate-500">Approve, reject, or remove members from the Members page.</div>
+            </div>
+          </div>
+          <GhostButton onClick={() => goTo("members")}>Go to Members <ChevronRight size={14} /></GhostButton>
+        </Card>
+      )}
+
+      <GhostButton danger onClick={onSignOut} className="w-fit"><LogOut size={15} /> Sign out</GhostButton>
+    </div>
+  );
+}
+
+/* =================================== Root =================================== */
+
+const GLOBAL_STYLES = `
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+@keyframes popIn { from { opacity: 0; transform: scale(.92) } to { opacity: 1; transform: scale(1) } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(14px) } to { opacity: 1; transform: translateY(0) } }
+@keyframes slideRight { from { transform: translateX(-100%) } to { transform: translateX(0) } }
+@keyframes moonFloat { 0%, 100% { transform: translateY(0) rotate(-4deg) } 50% { transform: translateY(-10px) rotate(4deg) } }
+@keyframes moonGlow { 0%, 100% { opacity: 0.5; transform: scale(0.92) } 50% { opacity: 1; transform: scale(1.08) } }
+@keyframes restGradientDrift { 0% { background-position: 0% 50% } 50% { background-position: 100% 50% } 100% { background-position: 0% 50% } }
+* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 8px; }
+input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.grad-brand { background-image: linear-gradient(90deg,#d16d94,#d1935a,#c9ad55,#5fa87e,#5a9fb3,#8b7fc2); }
+.grad-brand-diag { background-image: linear-gradient(135deg,#d16d94,#d1935a,#c9ad55,#5fa87e,#5a9fb3,#8b7fc2); }
+.grad-brand-text { background-image: linear-gradient(90deg,#d16d94,#d1935a,#c9ad55,#5fa87e,#5a9fb3,#8b7fc2); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.grad-warm { background-image: linear-gradient(90deg,#d1935a,#d16d94,#c9ad55); }
+`;
+
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-950">
+      <style>{GLOBAL_STYLES}</style>
+      <div className="flex flex-col items-center gap-3">
+        <div className={`w-10 h-10 rounded-2xl ${GRAD} animate-pulse flex items-center justify-center text-white`}>◆</div>
+        <span className="text-slate-500 text-sm">Loading PRISM…</span>
+      </div>
+    </div>
+  );
+}
+
+function completeExerciseOnMember(m, finalizedInst, allInstances, program) {
+  const iso = todayISO();
+  let next = { ...m };
+  const vol = volumeOf(finalizedInst.sets, finalizedInst.reps, finalizedInst.weight);
+  const hist = [...(next.history[finalizedInst.exerciseId] || []), { date: iso, sets: finalizedInst.sets, reps: finalizedInst.reps, weight: finalizedInst.weight, addedWeight: finalizedInst.addedWeight, volume: vol }];
+  next.history = { ...next.history, [finalizedInst.exerciseId]: hist };
+
+  const wl = next.worklogs[iso] || { exercises: {} };
+  const exercises = { ...wl.exercises, [finalizedInst.exerciseId]: { sets: finalizedInst.sets, reps: finalizedInst.reps, weight: finalizedInst.weight, addedWeight: finalizedInst.addedWeight, done: true, isPR: finalizedInst.isPR } };
+
+  let xpGain = 15 + (finalizedInst.isPR ? 10 : 0);
+  next.totalVolume = (next.totalVolume || 0) + vol;
+  next.prCount = (next.prCount || 0) + (finalizedInst.isPR ? 1 : 0);
+
+  const allDone = allInstances.every((i) => i.done);
+  let completedAt = wl.completedAt;
+  if (allDone && !wl.completedAt) {
+    completedAt = Date.now();
+    next.totalWorkouts = (next.totalWorkouts || 0) + 1;
+    xpGain += 50;
+    next = applyStreak(next, iso, program);
+  }
+  next.worklogs = { ...next.worklogs, [iso]: { ...wl, exercises, completedAt } };
+  next.xp = (next.xp || 0) + xpGain;
+  next.level = levelInfo(next.xp).level;
+  next.unlocked = recomputeAchievements(next);
+  return { next, xpGain, allDone };
+}
+
+export default function App() {
+  const [state, setState] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [session, setSession] = useState(null);
+  const [authUser, setAuthUser] = useState(undefined); // undefined = not checked yet, null = signed out
+  const [page, setPage] = useState("dashboard");
+  const [exerciseId, setExerciseId] = useState(null);
+  const [memberProfileId, setMemberProfileId] = useState(null);
+  const [dayDetailISO, setDayDetailISO] = useState(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [photos, setPhotos] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      let s = await storageLoadState();
+      if (!s) {
+        s = emptyAppState();
+        await storageSaveState(s);
+      }
+      setState(s);
+      setLoading(false);
+    })();
+  }, []);
+
+  // Google OAuth session, via Supabase Auth. `authUser` tracks Supabase's own
+  // notion of who's signed in; `session.userId` (below) is the app-level id
+  // used everywhere else and is only set once that auth user has a member record.
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setAuthUser(data.session?.user ?? null));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, sess) => {
+      setAuthUser(sess?.user ?? null);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  // Once we know both who's authenticated and the current shared state, make
+  // sure that auth user has a member record — creating one on first login —
+  // then point `session` at it. Mirrors the old handleSubmitName bootstrap,
+  // but keyed off the real Supabase auth user id instead of a typed name.
+  useEffect(() => {
+    if (!authUser || !state) {
+      if (authUser === null) setSession(null);
+      return;
+    }
+    const existing = state.members[authUser.id];
+    if (existing) {
+      setSession({ userId: authUser.id });
+      return;
+    }
+    const isFirst = Object.keys(state.members).length === 0;
+    const displayName =
+      authUser.user_metadata?.full_name || authUser.user_metadata?.name || authUser.email || "New Member";
+    const m = newMember({
+      id: authUser.id,
+      name: displayName,
+      avatarUrl: authUser.user_metadata?.avatar_url || null,
+      role: isFirst ? "admin" : "member",
+      status: isFirst ? "approved" : "pending",
+    });
+    const next = { ...state, members: { ...state.members, [m.id]: m } };
+    lastPersistRef.current = Date.now();
+    setState(next);
+    storageSaveState(next);
+    setSession({ userId: m.id });
+  }, [authUser, state?.members]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const showToast = useCallback((message, icon = "✨") => setToast({ message, icon }), []);
+
+  // Keep the (module-level) merged exercise-lookup index in sync with shared state,
+  // so getEx() resolves custom exercises everywhere without prop-drilling it into
+  // every component that renders an exercise name/icon/instructions.
+  useEffect(() => {
+    syncExerciseIndex(state?.customExercises || {});
+  }, [state?.customExercises]);
+
+  const lastPersistRef = useRef(0);
+  const persist = useCallback((next) => {
+    lastPersistRef.current = Date.now();
+    setState(next);
+    storageSaveState(next);
+  }, []);
+
+  const fetchFreshState = useCallback(async () => {
+    if (Date.now() - lastPersistRef.current < 3000) return; // don't clobber a very recent local write
+    const fresh = await storageLoadState();
+    if (fresh) setState(fresh);
+  }, []);
+
+  const handleRefreshState = useCallback(async () => {
+    setRefreshing(true);
+    lastPersistRef.current = 0; // manual refresh should always go through
+    const fresh = await storageLoadState();
+    if (fresh) setState(fresh);
+    setRefreshing(false);
+  }, []);
+
+  // Keep shared data in sync across sessions: fast polling while waiting on approval,
+  // slower background polling once approved (so e.g. new join requests or a friend's
+  // freshly-created program show up without a full page reload).
+  const myStatus = state?.members?.[session?.userId]?.status;
+  useEffect(() => {
+    if (!session?.userId || !myStatus) return;
+    const intervalMs = myStatus === "pending" ? 6000 : 20000;
+    const t = setInterval(fetchFreshState, intervalMs);
+    return () => clearInterval(t);
+  }, [session?.userId, myStatus, fetchFreshState]);
+
+  useEffect(() => {
+    if (session && state?.members?.[session.userId]) {
+      storageLoadPhotos(session.userId).then(setPhotos);
+    } else {
+      setPhotos([]);
+    }
+  }, [session?.userId, !!state?.members?.[session?.userId]]);
+
+  const handleGoTo = useCallback((id) => {
+    setPage(id);
+    setExerciseId(null);
+    setMemberProfileId(null);
+    setDayDetailISO(null);
+    setDrawerOpen(false);
+  }, []);
+
+  // Calendar dates jump straight to the live Today page if it's today, otherwise
+  // they open a read-only summary of that day's plan/logged workout.
+  const handleSelectDate = useCallback((iso) => {
+    if (iso === todayISO()) {
+      handleGoTo("today");
+    } else {
+      setExerciseId(null);
+      setMemberProfileId(null);
+      setDayDetailISO(iso);
+    }
+  }, [handleGoTo]);
+
+  const handleGoogleSignIn = () => {
+    supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin },
+    });
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+    setPage("dashboard");
+    setExerciseId(null);
+    setMemberProfileId(null);
+    setDayDetailISO(null);
+    setPhotos([]);
+  };
+
+  const handleApprove = (id) => persist({ ...state, members: { ...state.members, [id]: { ...state.members[id], status: "approved" } } });
+  const handleReject = (id) => { const members = { ...state.members }; delete members[id]; persist({ ...state, members }); };
+  const handleRemoveMember = (id) => {
+    const members = { ...state.members }; delete members[id];
+    const programs = { ...state.programs };
+    Object.values(programs).forEach((p) => { if (p.ownerId === id) delete programs[p.id]; });
+    persist({ ...state, members, programs });
+    setMemberProfileId(null);
+    showToast("Member removed", "🗑️");
+  };
+
+  const handleSaveProgram = (draft) => {
+    const programs = { ...state.programs };
+    if (draft.active) {
+      Object.values(programs).forEach((p) => { if (p.ownerId === draft.ownerId && p.id !== draft.id) programs[p.id] = { ...p, active: false }; });
+    }
+    programs[draft.id] = draft;
+    let members = state.members;
+    if (draft.active) members = { ...members, [draft.ownerId]: { ...members[draft.ownerId], activeProgramId: draft.id } };
+    persist({ ...state, programs, members });
+    showToast("Program saved", "💾");
+  };
+  const handleActivateProgram = (id) => {
+    const programs = { ...state.programs };
+    const target = programs[id];
+    Object.values(programs).forEach((p) => { if (p.ownerId === target.ownerId) programs[p.id] = { ...p, active: p.id === id }; });
+    const members = { ...state.members, [target.ownerId]: { ...state.members[target.ownerId], activeProgramId: id } };
+    persist({ ...state, programs, members });
+    showToast("Program activated", "⚡");
+  };
+  const handleDuplicateProgram = (id) => {
+    const src = state.programs[id];
+    const clone = { ...src, id: uid("prog"), name: src.name + " (Copy)", active: false, days: JSON.parse(JSON.stringify(src.days)) };
+    persist({ ...state, programs: { ...state.programs, [clone.id]: clone } });
+  };
+  const handleDeleteProgram = (id) => {
+    const programs = { ...state.programs };
+    const wasActive = programs[id]?.active;
+    const ownerId = programs[id]?.ownerId;
+    delete programs[id];
+    let members = state.members;
+    if (wasActive) members = { ...members, [ownerId]: { ...members[ownerId], activeProgramId: null } };
+    persist({ ...state, programs, members });
+  };
+
+  const handleAddCustomExercise = (payload) => {
+    const ex = newCustomExercise({ ...payload, createdBy: session.userId });
+    persist({ ...state, customExercises: { ...state.customExercises, [ex.id]: ex } });
+    showToast(`"${ex.name}" added to your library`, "🆕");
+    return ex.id;
+  };
+  const handleDeleteCustomExercise = (id) => {
+    const ex = state.customExercises[id];
+    if (!ex) return;
+    const me = state.members[session.userId];
+    // Exercises created before this field existed have no recorded owner —
+    // treat those as unowned/legacy rather than locking everyone out of them.
+    const isOwner = !ex.createdBy || ex.createdBy === session.userId;
+    if (!isOwner && me?.role !== "admin") {
+      showToast("Only its creator or an admin can delete this exercise", "🔒");
+      return;
+    }
+    const inProgram = Object.values(state.programs).some((p) =>
+      DAY_ORDER.some((d) => (p.days?.[d]?.exercises || []).some((e) => e.exerciseId === id))
+    );
+    const inHistory = Object.values(state.members).some((mm) => (mm.history?.[id] || []).length > 0);
+    if (inProgram || inHistory) {
+      showToast("This exercise is used in a program or logged history — can't delete it", "⚠️");
+      return;
+    }
+    const customExercises = { ...state.customExercises };
+    delete customExercises[id];
+    persist({ ...state, customExercises });
+    showToast("Custom exercise deleted", "🗑️");
+  };
+
+  const handleCompleteExercise = (finalizedInst, allInstances) => {
+    const m = state.members[session.userId];
+    const before = m.unlocked || [];
+    const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
+    const { next, xpGain, allDone } = completeExerciseOnMember(m, finalizedInst, allInstances, program);
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    if (allDone && finalizedInst.isPR) showToast(`Workout complete + new PR! +${xpGain} XP`, "🏆");
+    else if (finalizedInst.isPR) showToast(`New personal record! +${xpGain} XP`, "🏆");
+    else if (allDone) showToast(`Workout complete! +${xpGain} XP`, "🎉");
+    else showToast(`+${xpGain} XP`, "⚡");
+    const newly = next.unlocked.filter((id) => !before.includes(id));
+    newly.forEach((id, i) => {
+      const a = ACHIEVEMENTS.find((x) => x.id === id);
+      if (a) setTimeout(() => showToast(`${a.name} unlocked!`, a.icon), 1700 + i * 1800);
+    });
+  };
+
+  const handleEditDone = (oldInst, updatedInst) => {
+    const m = state.members[session.userId];
+    const before = m.unlocked || [];
+    const iso = todayISO();
+    const exerciseId = oldInst.exerciseId;
+    const hist = [...(m.history[exerciseId] || [])];
+    const idx = hist.length - 1;
+    const oldVol = hist[idx]?.volume || 0;
+    const newVol = volumeOf(updatedInst.sets, updatedInst.reps, updatedInst.weight);
+
+    // Recompute whether this session is a PR against every *other* session for
+    // this exercise (i.e. excluding the entry being edited) rather than trusting
+    // whatever isPR was decided at the original completion time.
+    const priorMax = hist.reduce((max, h, i) => (i === idx ? max : Math.max(max, h.weight)), 0);
+    const newIsPR = updatedInst.weight > priorMax;
+    const oldIsPR = !!m.worklogs[iso]?.exercises?.[exerciseId]?.isPR;
+    const prDelta = (newIsPR ? 1 : 0) - (oldIsPR ? 1 : 0);
+
+    if (idx >= 0) hist[idx] = { ...hist[idx], sets: updatedInst.sets, reps: updatedInst.reps, weight: updatedInst.weight, addedWeight: updatedInst.addedWeight, volume: newVol };
+    const wl = m.worklogs[iso] || { exercises: {} };
+    const exercises = { ...wl.exercises, [exerciseId]: { ...wl.exercises[exerciseId], sets: updatedInst.sets, reps: updatedInst.reps, weight: updatedInst.weight, addedWeight: updatedInst.addedWeight, isPR: newIsPR } };
+
+    let next = {
+      ...m,
+      history: { ...m.history, [exerciseId]: hist },
+      worklogs: { ...m.worklogs, [iso]: { ...wl, exercises } },
+      totalVolume: (m.totalVolume || 0) - oldVol + newVol,
+      prCount: Math.max(0, (m.prCount || 0) + prDelta),
+      xp: Math.max(0, (m.xp || 0) + prDelta * 10),
+    };
+    next.level = levelInfo(next.xp).level;
+    next.unlocked = recomputeAchievements(next);
+
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+
+    if (prDelta > 0) showToast("New personal record! +10 XP", "🏆");
+    else if (prDelta < 0) showToast("Edit saved — no longer a PR", "✏️");
+
+    const newly = next.unlocked.filter((id) => !before.includes(id));
+    newly.forEach((id, i) => {
+      const a = ACHIEVEMENTS.find((x) => x.id === id);
+      if (a) setTimeout(() => showToast(`${a.name} unlocked!`, a.icon), 1700 + i * 1800);
+    });
+  };
+
+  const handleSaveNote = (exerciseId_, text) => {
+    const m = state.members[session.userId];
+    const next = { ...m, exerciseNotes: { ...m.exerciseNotes, [exerciseId_]: text } };
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+  };
+  const handleSaveCustomInstructions = (exerciseId_, text) => {
+    const existing = state.customExercises[exerciseId_];
+    if (!existing) return;
+    const trimmed = text.trim() || "Custom exercise — added by you. Tap into it any time to add form notes.";
+    persist({ ...state, customExercises: { ...state.customExercises, [exerciseId_]: { ...existing, instructions: trimmed } } });
+  };
+
+  const handleUpdateProfile = (patch) => {
+    const m = state.members[session.userId];
+    if (patch.name !== undefined) {
+      const trimmed = patch.name.trim();
+      if (!trimmed) return;
+      const collision = Object.values(state.members).some(
+        (other) => other.id !== m.id && other.name.trim().toLowerCase() === trimmed.toLowerCase()
+      );
+      if (collision) {
+        showToast("That name is already taken by another member", "🚫");
+        return;
+      }
+      patch = { ...patch, name: trimmed };
+    }
+    const next = { ...m, ...patch };
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+  };
+
+  const handleAddPhoto = (dataUrl, note = "") => {
+    setPhotos((prev) => {
+      const next = [...prev, { id: uid("photo"), date: todayISO(), dataUrl, note }];
+      storageSavePhotos(session.userId, next);
+      return next;
+    });
+    const m = state.members[session.userId];
+    const withCount = { ...m, photoCount: (m.photoCount || 0) + 1 };
+    const nextMember = { ...withCount, unlocked: recomputeAchievements(withCount) };
+    persist({ ...state, members: { ...state.members, [session.userId]: nextMember } });
+    showToast("Photo added", "📸");
+  };
+  const handleDeletePhoto = (id) => {
+    setPhotos((prev) => {
+      const next = prev.filter((p) => p.id !== id);
+      storageSavePhotos(session.userId, next);
+      return next;
+    });
+  };
+  const handleUpdatePhotoNote = (id, note) => {
+    setPhotos((prev) => {
+      const next = prev.map((p) => (p.id === id ? { ...p, note } : p));
+      storageSavePhotos(session.userId, next);
+      return next;
+    });
+  };
+
+  if (loading || !state || authUser === undefined) return <LoadingScreen />;
+  if (!authUser) return <><style>{GLOBAL_STYLES}</style><LoginScreen onGoogleSignIn={handleGoogleSignIn} /></>;
+  if (!session) return <LoadingScreen />; // member record is being provisioned
+
+  const me = state.members[session.userId];
+  if (!me) return <LoadingScreen />;
+
+  let main;
+  if (exerciseId) {
+    main = <ExerciseDetailPage exerciseId={exerciseId} me={me} onBack={() => setExerciseId(null)} onSaveNote={handleSaveNote} onSaveInstructions={handleSaveCustomInstructions} />;
+  } else if (memberProfileId && state.members[memberProfileId]) {
+    main = <MemberProfilePage member={state.members[memberProfileId]} me={me} programs={state.programs} onBack={() => setMemberProfileId(null)} onRemove={handleRemoveMember} />;
+  } else if (dayDetailISO) {
+    main = (
+      <DayDetailPage
+        iso={dayDetailISO} me={me} programs={state.programs}
+        onBack={() => setDayDetailISO(null)} openExercise={setExerciseId}
+        goToToday={() => handleGoTo("today")}
+      />
+    );
+  } else {
+    switch (page) {
+      case "today":
+        main = <TodayPage me={me} programs={state.programs} openExercise={setExerciseId} onCompleteExercise={handleCompleteExercise} onEditDone={handleEditDone} onCreateProgram={() => handleGoTo("programs")} />;
+        break;
+      case "programs":
+        main = <ProgramsPage me={me} programs={state.programs} onActivate={handleActivateProgram} onSaveProgram={handleSaveProgram} onDuplicate={handleDuplicateProgram} onDelete={handleDeleteProgram} customExercises={state.customExercises} onAddCustom={handleAddCustomExercise} onDeleteCustom={handleDeleteCustomExercise} />;
+        break;
+      case "members":
+        main = <MembersPage me={me} members={state.members} programs={state.programs} onOpen={setMemberProfileId} onApprove={handleApprove} onReject={handleReject} onRefresh={handleRefreshState} refreshing={refreshing} />;
+        break;
+      case "profile":
+        main = (
+          <ProfilePage
+            me={me} programs={state.programs} photos={photos}
+            onUpdate={handleUpdateProfile} onAddPhoto={handleAddPhoto} onDeletePhoto={handleDeletePhoto} onUpdatePhotoNote={handleUpdatePhotoNote}
+            onSignOut={handleSignOut} goTo={handleGoTo} onSelectDate={handleSelectDate}
+          />
+        );
+        break;
+      default:
+        main = <Dashboard me={me} members={state.members} programs={state.programs} goTo={handleGoTo} />;
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 relative">
+      <style>{GLOBAL_STYLES}</style>
+      <BackgroundGlow />
+      <div className="relative flex">
+        <Sidebar me={me} page={page} goTo={handleGoTo} onOpenProfile={() => handleGoTo("profile")} onSignOut={handleSignOut} />
+        <div className="flex-1 min-w-0">
+          <MobileTopbar me={me} onMenu={() => setDrawerOpen(true)} />
+          <MobileDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} me={me} page={page} goTo={handleGoTo} onSignOut={handleSignOut} />
+          <main className="max-w-5xl mx-auto p-5 md:p-8 pb-16">
+            {me.status === "pending" && <PendingApprovalBanner onRefresh={handleRefreshState} refreshing={refreshing} />}
+            <div key={page + exerciseId + memberProfileId + dayDetailISO} className="animate-[fadeIn_.25s_ease-out]">
+              {main}
+            </div>
+          </main>
+        </div>
+      </div>
+      <Toast toast={toast} />
+    </div>
+  );
+}

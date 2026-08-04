@@ -1,0 +1,9 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# SPA fallback: OAuth redirects and client-side routing all land on index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
