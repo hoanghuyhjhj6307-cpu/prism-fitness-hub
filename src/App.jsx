@@ -14,7 +14,7 @@ import {
 import { supabase } from "./supabaseClient";
 
 /* =========================================================================
-   PRISM — private fitness hub
+   KBL — private fitness hub
    React app backed by Supabase (Postgres + Auth). Shared state (members,
    programs, history) lives in one JSONB row; each user's photos live in
    their own row. Auth is Google OAuth via Supabase Auth.
@@ -594,7 +594,7 @@ export function applyStreak(m, iso, program) {
 }
 
 /* ---------------------------- Storage helpers ---------------------------- */
-const STATE_KEY = "prism_state_v1";
+const STATE_KEY = "KBL_state_v1";
 function normalizeState(s) {
   if (!s) return s;
   const members = Object.fromEntries(
@@ -931,7 +931,7 @@ function Wordmark({ size = "text-3xl" }) {
   return (
     <div className={`font-black tracking-tight ${size} flex items-center gap-2`}>
       <span className={`w-8 h-8 rounded-xl ${GRAD_DIAG} inline-flex items-center justify-center text-white text-base`}>◆</span>
-      <span className={GRAD_TEXT}>PRISM</span>
+      <span className={GRAD_TEXT}>KBL</span>
     </div>
   );
 }
@@ -2450,7 +2450,7 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
             <GhostButton danger onClick={() => setConfirmRemove(true)}><Trash2 size={14} /> Remove member</GhostButton>
           ) : (
             <div className="flex items-center gap-3">
-              <p className="text-sm text-slate-400 flex-1">Remove {member.name} from PRISM? This can't be undone.</p>
+              <p className="text-sm text-slate-400 flex-1">Remove {member.name} from KBL? This can't be undone.</p>
               <GhostButton onClick={() => setConfirmRemove(false)}>Cancel</GhostButton>
               <GhostButton danger onClick={() => onRemove(member.id)}>Confirm remove</GhostButton>
             </div>
@@ -3104,7 +3104,7 @@ function LoadingScreen() {
       <style>{GLOBAL_STYLES}</style>
       <div className="flex flex-col items-center gap-3">
         <div className={`w-10 h-10 rounded-2xl ${GRAD} animate-pulse flex items-center justify-center text-white`}>◆</div>
-        <span className="text-slate-500 text-sm">Loading PRISM…</span>
+        <span className="text-slate-500 text-sm">Loading KBL…</span>
       </div>
     </div>
   );
