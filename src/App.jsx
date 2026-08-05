@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   LayoutDashboard, CalendarCheck, Dumbbell, Users, User, ChevronRight, ChevronLeft,
   ChevronUp, ChevronDown, Flame, Trophy, Star, Plus, Check, X, Pencil, Copy, Trash2,
@@ -2525,14 +2526,38 @@ function AvatarUploadButton({ onUpload }) {
 function GoalPicker({ value, onChange }) {
   const [open, setOpen] = useState(false);
   const [customText, setCustomText] = useState("");
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const ref = useRef(null);
+  const menuRef = useRef(null);
   const display = goalInfo(value);
 
   useEffect(() => {
     if (!open) return;
-    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target) && menuRef.current && !menuRef.current.contains(e.target)) {
+        setOpen(false);
+      }
+    };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  // The dropdown is portaled to <body> (see below) so it can't be trapped behind a
+  // sibling card's own stacking context (e.g. cards using backdrop-blur). Since it's
+  // portaled out of normal flow, we position it manually from the trigger's rect.
+  useEffect(() => {
+    if (!open || !ref.current) return;
+    const updatePos = () => {
+      const rect = ref.current.getBoundingClientRect();
+      setMenuPos({ top: rect.bottom + 8, left: rect.left });
+    };
+    updatePos();
+    window.addEventListener("scroll", updatePos, true);
+    window.addEventListener("resize", updatePos);
+    return () => {
+      window.removeEventListener("scroll", updatePos, true);
+      window.removeEventListener("resize", updatePos);
+    };
   }, [open]);
 
   const pick = (v) => { onChange(v); setOpen(false); };
@@ -2554,8 +2579,12 @@ function GoalPicker({ value, onChange }) {
         <span className="font-medium">{display.label}</span>
         <ChevronDown size={14} className={`text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
-      {open && (
-        <div className="absolute z-20 mt-2 w-64 rounded-2xl bg-slate-900 border border-white/10 shadow-xl p-2 flex flex-col gap-1">
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          style={{ position: "fixed", top: menuPos.top, left: menuPos.left }}
+          className="z-[9999] w-64 rounded-2xl bg-slate-900 border border-white/10 shadow-xl p-2 flex flex-col gap-1"
+        >
           {GOALS.map((g) => (
             <button
               key={g.id} type="button" onClick={() => pick(g.id)}
@@ -2578,7 +2607,8 @@ function GoalPicker({ value, onChange }) {
               <Check size={13} />
             </button>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -2942,24 +2972,24 @@ function ProfilePage({ me, programs, photos, onUpdate, onAddPhoto, onDeletePhoto
           <GoalPicker value={me.goal} onChange={(v) => onUpdate({ goal: v })} />
         </div>
         <div className="grid grid-cols-3 gap-2 sm:gap-5">
-          <div>
+          <div className="min-w-0">
             <label className="text-[10px] sm:text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Bodyweight</label>
-            <div className="flex items-center gap-1.5 sm:gap-3">
-              <NumberField value={me.bodyweightKg ?? DEFAULT_BODYWEIGHT_KG} onChange={(v) => onUpdate({ bodyweightKg: v })} step={1} min={20} width="w-12 sm:w-20" label="bodyweight in kilograms" />
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-3">
+              <NumberField value={me.bodyweightKg ?? DEFAULT_BODYWEIGHT_KG} onChange={(v) => onUpdate({ bodyweightKg: v })} step={1} min={20} width="w-11 sm:w-20" label="bodyweight in kilograms" />
               <span className="text-xs sm:text-sm text-slate-400">kg</span>
             </div>
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="text-[10px] sm:text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Height</label>
-            <div className="flex items-center gap-1.5 sm:gap-3">
-              <NumberField value={me.heightCm ?? DEFAULT_HEIGHT_CM} onChange={(v) => onUpdate({ heightCm: v })} step={1} min={100} width="w-12 sm:w-20" label="height in centimeters" />
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-3">
+              <NumberField value={me.heightCm ?? DEFAULT_HEIGHT_CM} onChange={(v) => onUpdate({ heightCm: v })} step={1} min={100} width="w-11 sm:w-20" label="height in centimeters" />
               <span className="text-xs sm:text-sm text-slate-400">cm</span>
             </div>
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="text-[10px] sm:text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 block">Age</label>
-            <div className="flex items-center gap-1.5 sm:gap-3">
-              <NumberField value={me.age ?? DEFAULT_AGE} onChange={(v) => onUpdate({ age: v })} step={1} min={10} width="w-12 sm:w-20" label="age in years" />
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-3">
+              <NumberField value={me.age ?? DEFAULT_AGE} onChange={(v) => onUpdate({ age: v })} step={1} min={10} width="w-11 sm:w-20" label="age in years" />
               <span className="text-xs sm:text-sm text-slate-400">yrs</span>
             </div>
           </div>
