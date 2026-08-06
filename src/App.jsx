@@ -672,9 +672,9 @@ function emptyAppState() {
 
 /* ============================== Primitives =============================== */
 
-function Card({ children, className = "", glow = false }) {
+function Card({ children, className = "", glow = false, ...rest }) {
   return (
-    <div className={`rounded-3xl bg-white/[0.05] border border-white/10 backdrop-blur-xl ${glow ? "shadow-lg shadow-pink-400/10" : ""} ${className}`}>
+    <div className={`rounded-3xl bg-white/[0.05] border border-white/10 backdrop-blur-xl ${glow ? "shadow-lg shadow-pink-400/10" : ""} ${className}`} {...rest}>
       {children}
     </div>
   );
@@ -2463,6 +2463,12 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
   const volData = useMemo(() => aggregateVolumeByDate(member), [member]);
   const recentDays = useMemo(() => Object.entries(member.worklogs || {}).filter(([, v]) => v.completedAt).sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0)).slice(0, 6), [member]);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [programOpen, setProgramOpen] = useState(false);
+  const [activeDay, setActiveDay] = useState(() => DAY_FROM_JS[new Date().getDay()]);
+  const openProgram = (day) => {
+    if (day) setActiveDay(day);
+    setProgramOpen(true);
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -2492,15 +2498,103 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
       </div>
 
       {program && (
-        <Card className="p-5">
-          <SectionHeading eyebrow="Training" title={program.name} />
+        <Card
+          className="p-5 cursor-pointer hover:bg-white/[0.07] transition-colors group"
+          onClick={() => openProgram()}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openProgram(); } }}
+          aria-label={`View ${program.name} program and exercises`}
+        >
+          <SectionHeading
+            eyebrow="Training"
+            title={program.name}
+            right={<ChevronRight size={18} className="text-slate-500 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />}
+          />
           {program.description && <p className="text-sm text-slate-400 mb-3">{program.description}</p>}
           <div className="flex flex-wrap gap-1.5">
-            {DAY_ORDER.map((d) => (
-              <span key={d} className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold ${program.days[d]?.type === "workout" ? `${GRAD} text-white` : "bg-white/5 text-slate-500"}`}>{DAY_SHORT[d][0]}</span>
-            ))}
+            {DAY_ORDER.map((d) => {
+              const sched = program.days[d];
+              const isWorkout = sched?.type === "workout";
+              return (
+                <button
+                  key={d}
+                  onClick={(e) => { e.stopPropagation(); openProgram(d); }}
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold transition-transform hover:scale-110 ${isWorkout ? `${GRAD} text-white` : "bg-white/5 text-slate-500"}`}
+                  aria-label={`View ${DAY_SHORT[d]} — ${isWorkout ? `${(sched.exercises || []).length} exercises` : "rest day"}`}
+                >{DAY_SHORT[d][0]}</button>
+              );
+            })}
           </div>
+          <div className="text-[11px] text-slate-500 mt-3">Tap to view the full program & exercises</div>
         </Card>
+      )}
+
+      {program && (
+        <Modal open={programOpen} onClose={() => setProgramOpen(false)} title={program.name} size="lg">
+          {program.description && <p className="text-sm text-slate-400 mb-4 -mt-1">{program.description}</p>}
+          <div className="flex flex-wrap gap-1.5 mb-5">
+            {DAY_ORDER.map((d) => {
+              const sched = program.days[d];
+              const isWorkout = sched?.type === "workout";
+              const isActive = activeDay === d;
+              return (
+                <button
+                  key={d}
+                  onClick={() => setActiveDay(d)}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold flex flex-col items-center gap-1 border transition-colors ${
+                    isActive ? `${GRAD} text-white border-transparent` : "bg-white/5 text-slate-400 border-white/10 hover:bg-white/10"
+                  }`}
+                >
+                  <span>{DAY_SHORT[d]}</span>
+                  <span className={`text-[9px] font-normal ${isActive ? "opacity-90" : "opacity-60"}`}>
+                    {isWorkout ? `${(sched.exercises || []).length} ex` : "Rest"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {(() => {
+            const sched = program.days[activeDay];
+            const exercises = sched?.type === "workout" ? (sched.exercises || []) : [];
+            if (exercises.length === 0) {
+              return (
+                <div className="py-10 flex flex-col items-center text-center gap-2 text-slate-500">
+                  <span className="text-3xl">🌙</span>
+                  <p className="text-sm">Rest day — no exercises scheduled.</p>
+                </div>
+              );
+            }
+            return (
+              <div className="flex flex-col gap-2.5">
+                {exercises.map((pex, i) => {
+                  const ex = getEx(pex.exerciseId);
+                  const isCardio = ex?.loadType === "cardio";
+                  const isBW = ex?.loadType === "bodyweight";
+                  return (
+                    <div key={pex.id || i} className="rounded-2xl bg-white/[0.04] border border-white/10 p-3.5 flex items-center gap-3">
+                      <span className="text-xl shrink-0">{ex?.icon || "🏋️"}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-white font-medium truncate">{ex?.name || "Unknown exercise"}</div>
+                        <div className="text-[11px] text-slate-500">{ex?.muscle}</div>
+                        {pex.notes && <div className="text-[11px] text-slate-500 italic mt-0.5 truncate">{pex.notes}</div>}
+                      </div>
+                      <div className="flex flex-col items-end gap-0.5 shrink-0 text-xs">
+                        <span className="font-semibold text-white">{pex.sets} × {pex.reps}</span>
+                        {!isCardio && (
+                          <span className="text-slate-500">
+                            {isBW ? (pex.targetAddedWeight ? `+${pex.targetAddedWeight}kg` : "Bodyweight") : `${pex.targetWeight ?? 0}kg`}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </Modal>
       )}
 
       <Card className="p-5">
