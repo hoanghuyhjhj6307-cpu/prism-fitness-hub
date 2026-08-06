@@ -2091,7 +2091,7 @@ function ExercisePicker({ open, onClose, onPick, excludeIds = [], customExercise
   );
 }
 
-function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, dragProps, bodyweightKg }) {
+function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, onCopyToDays, dragProps, bodyweightKg }) {
   const ex = getEx(pex.exerciseId);
   const isCardio = ex?.loadType === "cardio";
   return (
@@ -2106,6 +2106,9 @@ function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, dra
         <div className="flex items-center gap-0.5 shrink-0">
           <button disabled={index === 0} onClick={() => onMove(-1)} aria-label={`Move ${ex?.name || "exercise"} up`} className="p-1.5 rounded-lg hover:bg-white/10 text-slate-500 hover:text-white disabled:opacity-20 disabled:pointer-events-none"><ChevronUp size={14} /></button>
           <button disabled={index === total - 1} onClick={() => onMove(1)} aria-label={`Move ${ex?.name || "exercise"} down`} className="p-1.5 rounded-lg hover:bg-white/10 text-slate-500 hover:text-white disabled:opacity-20 disabled:pointer-events-none"><ChevronDown size={14} /></button>
+          {onCopyToDays && (
+            <button onClick={onCopyToDays} aria-label={`Copy ${ex?.name || "exercise"} to another day`} title="Copy to other days" className="p-1.5 rounded-lg hover:bg-white/10 text-slate-500 hover:text-white"><Copy size={14} /></button>
+          )}
           <button onClick={onRemove} aria-label={`Remove ${ex?.name || "exercise"}`} className="p-1.5 rounded-lg hover:bg-rose-500/10 text-slate-500 hover:text-rose-300"><Trash2 size={14} /></button>
         </div>
       </div>
@@ -2148,10 +2151,17 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
   });
   const addExercise = (exerciseId) => setDraft((d) => {
     const ex = getEx(exerciseId);
-    const base = { id: uid("pex"), exerciseId, sets: 3, reps: 10, notes: "" };
-    const pex = ex?.loadType === "bodyweight" ? { ...base, targetAddedWeight: 0 }
-      : ex?.loadType === "cardio" ? { ...base, targetWeight: 0 }
-      : { ...base, targetWeight: 20 };
+    // If this exercise is already scheduled on another day in this program, reuse its
+    // sets/reps/weight/notes as the starting point instead of resetting to generic
+    // defaults — keeps the same exercise consistent across the days it's used on.
+    const priorDay = DAY_ORDER.find((dayKey) => dayKey !== selectedDay && (d.days[dayKey]?.exercises || []).some((e) => e.exerciseId === exerciseId));
+    const prior = priorDay ? d.days[priorDay].exercises.find((e) => e.exerciseId === exerciseId) : null;
+    const base = prior
+      ? { id: uid("pex"), exerciseId, sets: prior.sets, reps: prior.reps, notes: prior.notes }
+      : { id: uid("pex"), exerciseId, sets: 3, reps: 10, notes: "" };
+    const pex = ex?.loadType === "bodyweight" ? { ...base, targetAddedWeight: prior ? (prior.targetAddedWeight ?? 0) : 0 }
+      : ex?.loadType === "cardio" ? { ...base, targetWeight: prior ? (prior.targetWeight ?? 0) : 0 }
+      : { ...base, targetWeight: prior ? (prior.targetWeight ?? 20) : 20 };
     const list = [...d.days[selectedDay].exercises, pex];
     return { ...d, days: { ...d.days, [selectedDay]: { ...d.days[selectedDay], exercises: list } } };
   });
@@ -2171,6 +2181,30 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
       return { ...d, days: { ...d.days, [selectedDay]: { ...d.days[selectedDay], exercises: list } } };
     });
     dragIndex.current = null;
+  };
+
+  // ---- Copy an exercise (with its current sets/reps/weight/notes) to other days ----
+  const [copySourceIdx, setCopySourceIdx] = useState(null);
+  const [copyDays, setCopyDays] = useState([]);
+  const openCopyModal = (idx) => { setCopySourceIdx(idx); setCopyDays([]); };
+  const closeCopyModal = () => { setCopySourceIdx(null); setCopyDays([]); };
+  const toggleCopyDay = (day) => setCopyDays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
+  const copySourcePex = copySourceIdx !== null ? dayData.exercises[copySourceIdx] : null;
+  const confirmCopy = () => {
+    if (!copySourcePex || copyDays.length === 0) return;
+    setDraft((d) => {
+      let nextDays = d.days;
+      copyDays.forEach((day) => {
+        const list = nextDays[day]?.exercises || [];
+        const existingIdx = list.findIndex((e) => e.exerciseId === copySourcePex.exerciseId);
+        const cloned = { ...copySourcePex, id: existingIdx >= 0 ? list[existingIdx].id : uid("pex") };
+        const nextList = existingIdx >= 0 ? list.map((e, i) => (i === existingIdx ? cloned : e)) : [...list, cloned];
+        // Adding an exercise to a rest day implicitly turns it into a workout day.
+        nextDays = { ...nextDays, [day]: { ...nextDays[day], type: "workout", exercises: nextList } };
+      });
+      return { ...d, days: nextDays };
+    });
+    closeCopyModal();
   };
 
   return (
@@ -2220,6 +2254,7 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
                 <BuilderExerciseRow
                   key={pex.id} pex={pex} index={i} total={dayData.exercises.length} bodyweightKg={bodyweightKg}
                   onChange={(p) => patchExercise(i, p)} onRemove={() => removeExercise(i)} onMove={(dir) => moveExercise(i, dir)}
+                  onCopyToDays={() => openCopyModal(i)}
                   dragProps={{
                     draggable: true,
                     onDragStart: () => (dragIndex.current = i),
@@ -2255,6 +2290,39 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
         </>}
       >
         {`"${draft.name || "This program"}" and its full weekly plan will be permanently removed. This can't be undone.`}
+      </Modal>
+
+      <Modal
+        open={copySourceIdx !== null} onClose={closeCopyModal} title="Copy to other days"
+        footer={<>
+          <GhostButton onClick={closeCopyModal}>Cancel</GhostButton>
+          <GradientButton disabled={copyDays.length === 0} onClick={confirmCopy}>
+            <Copy size={14} /> Copy to {copyDays.length || ""} day{copyDays.length === 1 ? "" : "s"}
+          </GradientButton>
+        </>}
+      >
+        {copySourcePex && (
+          <>
+            <p className="text-sm text-slate-400 mb-3">
+              Send <span className="text-white font-medium">{getEx(copySourcePex.exerciseId)?.name}</span> — with its current sets, reps, weight, and notes — to:
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {DAY_ORDER.filter((d) => d !== selectedDay).map((d) => {
+                const already = draft.days[d]?.exercises?.some((e) => e.exerciseId === copySourcePex.exerciseId);
+                const active = copyDays.includes(d);
+                return (
+                  <button key={d} type="button" onClick={() => toggleCopyDay(d)}
+                    className={`flex flex-col items-center gap-0.5 px-3.5 py-2.5 rounded-xl border text-xs font-bold transition-all duration-200 ${
+                      active ? `${GRAD} text-white border-transparent shadow-md shadow-pink-400/30` : "bg-white/5 text-slate-300 border-white/10 hover:bg-white/10"
+                    }`}>
+                    {DAY_SHORT[d]}
+                    {already && <span className={`text-[9px] font-medium ${active ? "text-white/80" : "text-amber-300/80"}`}>update</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
       </Modal>
     </div>
   );
