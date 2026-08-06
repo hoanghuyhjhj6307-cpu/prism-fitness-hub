@@ -1893,7 +1893,7 @@ const LOAD_TYPE_BADGE_CLASS = {
 };
 const CUSTOM_ICON_CHOICES = ["⭐", "🏋️", "🤸", "🦵", "💪", "🧘", "🚣", "🚴", "🏃", "🙆", "🧗"];
 
-function CustomExerciseForm({ onCreate, onCancel }) {
+function CustomExerciseForm({ onCreate, onCancel, existingExercises = [], onUseExisting }) {
   const [name, setName] = useState("");
   const [muscle, setMuscle] = useState(MAIN_MUSCLE_OPTIONS[0]);
   const [secondary, setSecondary] = useState([]);
@@ -1901,7 +1901,13 @@ function CustomExerciseForm({ onCreate, onCancel }) {
   const [loadType, setLoadType] = useState("external");
   const [bwPercent, setBwPercent] = useState(100);
   const [instructions, setInstructions] = useState("");
-  const canSave = name.trim().length > 0;
+  // Guard against accidental duplicate library entries: if the typed name exactly
+  // matches an exercise that already exists (built-in or custom), nudge toward
+  // reusing it instead of creating a near-identical second copy.
+  const duplicateMatch = name.trim()
+    ? existingExercises.find((e) => e.name.trim().toLowerCase() === name.trim().toLowerCase())
+    : null;
+  const canSave = name.trim().length > 0 && !duplicateMatch;
   const toggleSecondary = (m) => setSecondary((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
   const secondaryOptions = [...MAIN_MUSCLE_OPTIONS.filter((m) => m !== muscle), ...MINOR_MUSCLE_OPTIONS];
 
@@ -1910,6 +1916,19 @@ function CustomExerciseForm({ onCreate, onCancel }) {
       <div className="text-xs font-semibold tracking-wider uppercase text-slate-400">New custom exercise</div>
       <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Exercise name"
         className="w-full px-3.5 py-2 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50" />
+
+      {duplicateMatch && (
+        <div className="flex items-center gap-2.5 p-2.5 rounded-xl bg-amber-400/10 border border-amber-400/20 text-xs text-amber-200">
+          <span className="text-base shrink-0">{duplicateMatch.icon}</span>
+          <span className="flex-1 min-w-0">"{duplicateMatch.name}" already exists in your library — reuse it instead of creating a duplicate.</span>
+          {onUseExisting && (
+            <button type="button" onClick={() => onUseExisting(duplicateMatch.id)}
+              className="shrink-0 px-2.5 py-1 rounded-lg bg-amber-400/20 hover:bg-amber-400/30 text-amber-100 font-semibold transition-colors">
+              Use existing
+            </button>
+          )}
+        </div>
+      )}
 
       <div>
         <div className="text-[11px] text-slate-500 mb-1.5">Main muscle group</div>
@@ -2014,6 +2033,12 @@ function ExercisePicker({ open, onClose, onPick, excludeIds = [], customExercise
 
       {showCustomForm ? (
         <CustomExerciseForm
+          existingExercises={list}
+          onUseExisting={(id) => {
+            setShowCustomForm(false);
+            onPick(id);
+            onClose();
+          }}
           onCancel={() => setShowCustomForm(false)}
           onCreate={(payload) => {
             const id = onAddCustom(payload);
