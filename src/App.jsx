@@ -594,6 +594,12 @@ export function applyStreak(m, iso, program) {
   return { ...m, streak, longestStreak: longest, lastActiveDate: iso };
 }
 
+// Emails in this list are always treated as admin — both for a brand-new
+// member record on first login, and to auto-upgrade an existing record that
+// was created before the email was added here (e.g. it originally signed in
+// as a regular "member").
+const ADMIN_EMAILS = ["buihuyhoang181001@gmail.com"];
+
 /* ---------------------------- Storage helpers ---------------------------- */
 const STATE_KEY = "KBL_state_v1";
 function normalizeState(s) {
@@ -607,6 +613,13 @@ function normalizeState(s) {
 // Per-user photo galleries live one-row-per-user in `user_photos`, keyed by the
 // Supabase auth user id. RLS policies (see supabase/schema.sql) restrict writes
 // to authenticated users.
+// Returns { data, failed }. This distinguishes "the row genuinely doesn't
+// exist yet" (data: null, failed: false — true first run) from "the read
+// itself failed" (data: null, failed: true — e.g. RLS rejecting a read that
+// happens before/without a valid auth session, such as during a wrong or
+// not-yet-settled login). Callers must NOT treat failed:true as "first run":
+// doing so previously caused a failed read to trigger creation of an empty
+// state that got saved over the real shared row, wiping everyone's data.
 async function storageLoadState() {
   try {
     const { data, error } = await supabase
@@ -615,10 +628,10 @@ async function storageLoadState() {
       .eq("id", 1)
       .maybeSingle();
     if (error) throw error;
-    return data ? normalizeState(data.data) : null;
+    return { data: data ? normalizeState(data.data) : null, failed: false };
   } catch (e) {
     console.error("storageLoadState failed", e);
-    return null;
+    return { data: null, failed: true };
   }
 }
 async function storageSaveState(state) {
@@ -3370,17 +3383,40 @@ export default function App() {
   const [photos, setPhotos] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Wait until Supabase has told us whether there's a valid auth session
+  // before doing the first read: reading while `authUser` is still
+  // `undefined` is exactly the race that used to cause RLS to reject the
+  // query (e.g. on a wrong/not-yet-settled login) and get misread as "no
+  // data exists yet". `loadAttempt` lets a failed read retry itself without
+  // ever treating "failed" the same as "genuinely empty".
+  const [loadAttempt, setLoadAttempt] = useState(0);
   useEffect(() => {
+    if (authUser === undefined) return;
+    let cancelled = false;
     (async () => {
-      let s = await storageLoadState();
-      if (!s) {
-        s = emptyAppState();
-        await storageSaveState(s);
+      const { data: s, failed } = await storageLoadState();
+      if (cancelled) return;
+      if (failed) {
+        // Read failed — could be a transient network/auth hiccup. Do NOT
+        // treat this as "first run": that would create and save an empty
+        // state over the real shared row. Just stay on the loading screen
+        // and retry shortly.
+        setTimeout(() => { if (!cancelled) setLoadAttempt((n) => n + 1); }, 1500);
+        return;
       }
-      setState(s);
+      if (s) {
+        setState(s);
+      } else {
+        // Query genuinely succeeded and found no row — this really is the
+        // first run ever, so it's safe to seed it.
+        const fresh = emptyAppState();
+        await storageSaveState(fresh);
+        if (!cancelled) setState(fresh);
+      }
       setLoading(false);
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [authUser, loadAttempt]);
 
   // Google OAuth session, via Supabase Auth. `authUser` tracks Supabase's own
   // notion of who's signed in; `session.userId` (below) is the app-level id
@@ -3402,8 +3438,19 @@ export default function App() {
       if (authUser === null) setSession(null);
       return;
     }
+    const isAdminEmail = authUser.email && ADMIN_EMAILS.includes(authUser.email);
     const existing = state.members[authUser.id];
     if (existing) {
+      // Upgrade an existing member to admin/approved if their email is on
+      // the admin list but their record predates that (e.g. they signed in
+      // before the email was added, or as a non-first member).
+      if (isAdminEmail && (existing.role !== "admin" || existing.status !== "approved")) {
+        const upgraded = { ...existing, role: "admin", status: "approved" };
+        const next = { ...state, members: { ...state.members, [authUser.id]: upgraded } };
+        lastPersistRef.current = Date.now();
+        setState(next);
+        storageSaveState(next);
+      }
       setSession({ userId: authUser.id });
       return;
     }
@@ -3414,8 +3461,8 @@ export default function App() {
       id: authUser.id,
       name: displayName,
       avatarUrl: authUser.user_metadata?.avatar_url || null,
-      role: isFirst ? "admin" : "member",
-      status: isFirst ? "approved" : "pending",
+      role: (isFirst || isAdminEmail) ? "admin" : "member",
+      status: (isFirst || isAdminEmail) ? "approved" : "pending",
     });
     const next = { ...state, members: { ...state.members, [m.id]: m } };
     lastPersistRef.current = Date.now();
@@ -3448,15 +3495,15 @@ export default function App() {
 
   const fetchFreshState = useCallback(async () => {
     if (Date.now() - lastPersistRef.current < 3000) return; // don't clobber a very recent local write
-    const fresh = await storageLoadState();
-    if (fresh) setState(fresh);
+    const { data: fresh, failed } = await storageLoadState();
+    if (!failed && fresh) setState(fresh);
   }, []);
 
   const handleRefreshState = useCallback(async () => {
     setRefreshing(true);
     lastPersistRef.current = 0; // manual refresh should always go through
-    const fresh = await storageLoadState();
-    if (fresh) setState(fresh);
+    const { data: fresh, failed } = await storageLoadState();
+    if (!failed && fresh) setState(fresh);
     setRefreshing(false);
   }, []);
 
