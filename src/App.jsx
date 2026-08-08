@@ -2104,9 +2104,12 @@ function ExercisePicker({ open, onClose, onPick, excludeIds = [], customExercise
   );
 }
 
-function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, onCopyToDays, dragProps, bodyweightKg }) {
+function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, onCopyToDays, dragProps, bodyweightKg, sharedNote, onSaveNote }) {
   const ex = getEx(pex.exerciseId);
   const isCardio = ex?.loadType === "cardio";
+  const [noteDraft, setNoteDraft] = useState(sharedNote || "");
+  const noteSaved = useRef(sharedNote || "");
+  useEffect(() => { setNoteDraft(sharedNote || ""); noteSaved.current = sharedNote || ""; }, [sharedNote, pex.exerciseId]);
   return (
     <div {...dragProps} className="rounded-2xl bg-white/[0.04] border border-white/10 p-3.5 flex flex-col gap-3">
       <div className="flex items-center gap-3">
@@ -2137,14 +2140,22 @@ function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, onC
             />
           </div>
         )}
-        <input value={pex.notes} onChange={(e) => onChange({ notes: e.target.value })} placeholder="Notes (optional)"
+        <input
+          value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)}
+          onBlur={() => {
+            if (noteSaved.current !== noteDraft) {
+              onSaveNote?.(pex.exerciseId, noteDraft);
+              noteSaved.current = noteDraft;
+            }
+          }}
+          placeholder="Notes (optional)" title="Shared with this exercise's notes everywhere it's used"
           className="flex-1 min-w-[120px] px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-600 text-xs focus:outline-none focus:ring-1 focus:ring-pink-400/50" />
       </div>
     </div>
   );
 }
 
-function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, onAddCustom, onDeleteCustom, bodyweightKg, me }) {
+function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, onAddCustom, onDeleteCustom, bodyweightKg, me, onSaveNote }) {
   const [draft, setDraft] = useState(initial);
   const [selectedDay, setSelectedDay] = useState("mon");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -2266,6 +2277,7 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
               {dayData.exercises.map((pex, i) => (
                 <BuilderExerciseRow
                   key={pex.id} pex={pex} index={i} total={dayData.exercises.length} bodyweightKg={bodyweightKg}
+                  sharedNote={me.exerciseNotes?.[pex.exerciseId] || ""} onSaveNote={onSaveNote}
                   onChange={(p) => patchExercise(i, p)} onRemove={() => removeExercise(i)} onMove={(dir) => moveExercise(i, dir)}
                   onCopyToDays={() => openCopyModal(i)}
                   dragProps={{
@@ -2341,7 +2353,7 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
   );
 }
 
-function ProgramsPage({ me, programs, onActivate, onSaveProgram, onDuplicate, onDelete, customExercises, onAddCustom, onDeleteCustom }) {
+function ProgramsPage({ me, programs, onActivate, onSaveProgram, onDuplicate, onDelete, customExercises, onAddCustom, onDeleteCustom, onSaveNote }) {
   const [editingId, setEditingId] = useState(null);
   const [creating, setCreating] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
@@ -2355,7 +2367,7 @@ function ProgramsPage({ me, programs, onActivate, onSaveProgram, onDuplicate, on
         onCancel={() => { setCreating(false); setEditingId(null); }}
         onDelete={editingId ? () => { onDelete(editingId); setEditingId(null); } : null}
         onSave={(draft) => { onSaveProgram(draft); setCreating(false); setEditingId(null); }}
-        customExercises={customExercises} onAddCustom={onAddCustom} onDeleteCustom={onDeleteCustom} bodyweightKg={me.bodyweightKg} me={me}
+        customExercises={customExercises} onAddCustom={onAddCustom} onDeleteCustom={onDeleteCustom} bodyweightKg={me.bodyweightKg} me={me} onSaveNote={onSaveNote}
       />
     );
   }
@@ -2591,7 +2603,7 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-white font-medium truncate">{ex?.name || "Unknown exercise"}</div>
                         <div className="text-[11px] text-slate-500">{ex?.muscle}</div>
-                        {pex.notes && <div className="text-[11px] text-slate-500 italic mt-0.5 truncate">{pex.notes}</div>}
+                        {member.exerciseNotes?.[pex.exerciseId] && <div className="text-[11px] text-slate-500 italic mt-0.5 truncate">{member.exerciseNotes[pex.exerciseId]}</div>}
                       </div>
                       <div className="flex flex-col items-end gap-0.5 shrink-0 text-xs">
                         <span className="font-semibold text-white">{pex.sets} × {pex.reps}</span>
@@ -3784,7 +3796,7 @@ export default function App() {
         main = <TodayPage me={me} programs={state.programs} openExercise={setExerciseId} onCompleteExercise={handleCompleteExercise} onEditDone={handleEditDone} onCreateProgram={() => handleGoTo("programs")} />;
         break;
       case "programs":
-        main = <ProgramsPage me={me} programs={state.programs} onActivate={handleActivateProgram} onSaveProgram={handleSaveProgram} onDuplicate={handleDuplicateProgram} onDelete={handleDeleteProgram} customExercises={state.customExercises} onAddCustom={handleAddCustomExercise} onDeleteCustom={handleDeleteCustomExercise} />;
+        main = <ProgramsPage me={me} programs={state.programs} onActivate={handleActivateProgram} onSaveProgram={handleSaveProgram} onDuplicate={handleDuplicateProgram} onDelete={handleDeleteProgram} customExercises={state.customExercises} onAddCustom={handleAddCustomExercise} onDeleteCustom={handleDeleteCustomExercise} onSaveNote={handleSaveNote} />;
         break;
       case "members":
         main = <MembersPage me={me} members={state.members} programs={state.programs} onOpen={setMemberProfileId} onApprove={handleApprove} onReject={handleReject} onRefresh={handleRefreshState} refreshing={refreshing} />;
