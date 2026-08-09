@@ -1368,16 +1368,28 @@ function countScheduledProgress(me, program, startISO, endISO) {
   return { total, done };
 }
 
+function monthEndISO(iso) {
+  const [y, m] = iso.split("-").map(Number);
+  const last = new Date(y, m, 0); // day 0 of next month = last day of this month
+  return `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, "0")}-${String(last.getDate()).padStart(2, "0")}`;
+}
+
 export function computeProgress(me, program, todayOverride) {
   const iso = todayOverride || todayISO();
   const [weekStart] = weekBoundsISO(iso);
   const monthStart = iso.slice(0, 8) + "01";
+  // Month total covers every scheduled workout day in the whole month (Aug 1–31), not
+  // just the days elapsed so far — so "3/4" only shows once the month is actually done
+  // and there really were 4 scheduled sessions total. Early in the month this means the
+  // denominator already reflects the full month while the numerator (done) can only ever
+  // count days that have already happened, since future days have no completedAt yet.
+  const monthEnd = monthEndISO(iso);
   // Computed independently (not as one combined loop) because the current week can
   // dip into the previous month — e.g. a Monday week-start on the last days of August
   // while "today" is already in September. A single month-anchored loop would silently
   // undercount those early-week days.
   const week = countScheduledProgress(me, program, weekStart, iso);
-  const month = countScheduledProgress(me, program, monthStart, iso);
+  const month = countScheduledProgress(me, program, monthStart, monthEnd);
   return {
     weekPct: week.total ? Math.round((week.done / week.total) * 100) : 0,
     monthPct: month.total ? Math.round((month.done / month.total) * 100) : 0,
@@ -2017,11 +2029,30 @@ function exerciseStats(hist) {
   };
 }
 
+// Shared time-range filter for the exercise trend chart + history list, so "how far
+// back" is one control instead of a hardcoded slice(-6)/slice(-12) that silently
+// hides older sessions with no way to see them.
+const HIST_RANGES = [
+  { id: "week", label: "Week" },
+  { id: "month", label: "Month" },
+  { id: "all", label: "All" },
+];
+function filterHistByRange(hist, range) {
+  if (range === "all") return hist;
+  const days = range === "week" ? 7 : 30;
+  const cutoff = addDaysISO(todayISO(), -days);
+  return hist.filter((h) => h.date >= cutoff);
+}
+
 function ExerciseChart({ hist, metric }) {
-  const data = hist.slice(-12).map((h) => ({ date: formatShortDate(h.date), value: metric === "volume" ? h.volume : metric === "weight" ? h.weight : h.reps }));
+  const data = hist.map((h) => ({ date: formatShortDate(h.date), value: metric === "volume" ? h.volume : metric === "weight" ? h.weight : h.reps }));
   if (data.length < 2) {
     return <div className="h-56 flex items-center justify-center text-sm text-slate-500">Log a couple more sessions to see this trend.</div>;
   }
+  // With a wide range selected (e.g. "All" on a long history) there can be many points —
+  // thin out dots and axis labels so the chart stays readable instead of a smear.
+  const dense = data.length > 30;
+  const tickInterval = dense ? Math.ceil(data.length / 8) : 0;
   return (
     <ResponsiveContainer width="100%" height={224}>
       <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -2032,12 +2063,20 @@ function ExerciseChart({ hist, metric }) {
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
-        <XAxis dataKey="date" tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} />
+        <XAxis dataKey="date" tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} interval={tickInterval} />
         <YAxis tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} width={40} />
         <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 12 }} labelStyle={{ color: "#94a3b8" }} />
-        <Area type="monotone" dataKey="value" stroke="#d16d94" strokeWidth={2.5} fill="url(#exFill)" dot={{ r: 3, fill: "#d16d94" }} />
+        <Area type="monotone" dataKey="value" stroke="#d16d94" strokeWidth={2.5} fill="url(#exFill)" dot={dense ? false : { r: 3, fill: "#d16d94" }} />
       </AreaChart>
     </ResponsiveContainer>
+  );
+}
+
+function RangeChips({ range, onChange }) {
+  return (
+    <div className="flex gap-2">
+      {HIST_RANGES.map((r) => <Chip key={r.id} active={range === r.id} onClick={() => onChange(r.id)}>{r.label}</Chip>)}
+    </div>
   );
 }
 
@@ -2046,6 +2085,8 @@ function ExerciseDetailPage({ exerciseId, me, onBack, onSaveNote, onSaveInstruct
   const hist = (me.history[exerciseId] || []).slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const stats = useMemo(() => exerciseStats(hist), [hist]);
   const [metric, setMetric] = useState("weight");
+  const [range, setRange] = useState("all");
+  const rangedHist = useMemo(() => filterHistByRange(hist, range), [hist, range]);
   const [note, setNote] = useState(me.exerciseNotes?.[exerciseId] || "");
   const noteSaved = useRef(note);
   const [instr, setInstr] = useState(ex?.instructions || "");
@@ -2127,20 +2168,26 @@ function ExerciseDetailPage({ exerciseId, me, onBack, onSaveNote, onSaveInstruct
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
           <SectionHeading eyebrow="Trend" title="Progress" />
-          <div className="flex gap-2">
-            {["weight", "volume", "reps"].map((m) => <Chip key={m} active={metric === m} onClick={() => setMetric(m)}>{m[0].toUpperCase() + m.slice(1)}</Chip>)}
+          <div className="flex flex-wrap items-center gap-3">
+            <RangeChips range={range} onChange={setRange} />
+            <div className="flex gap-2">
+              {["weight", "volume", "reps"].map((m) => <Chip key={m} active={metric === m} onClick={() => setMetric(m)}>{m[0].toUpperCase() + m.slice(1)}</Chip>)}
+            </div>
           </div>
         </div>
-        <ExerciseChart hist={hist} metric={metric} />
+        <ExerciseChart hist={rangedHist} metric={metric} />
       </Card>
 
       <Card className="p-5">
-        <SectionHeading eyebrow="History" title="Previous sessions" />
-        {hist.length === 0 ? (
-          <p className="text-sm text-slate-500">No sessions logged yet.</p>
+        <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
+          <SectionHeading eyebrow="History" title="Previous sessions" />
+          <RangeChips range={range} onChange={setRange} />
+        </div>
+        {rangedHist.length === 0 ? (
+          <p className="text-sm text-slate-500 mt-3">{hist.length === 0 ? "No sessions logged yet." : "No sessions in this range."}</p>
         ) : (
-          <div className="flex flex-col divide-y divide-white/5">
-            {hist.slice(-6).reverse().map((h, i) => (
+          <div className="flex flex-col divide-y divide-white/5 max-h-96 overflow-y-auto mt-2">
+            {rangedHist.slice().reverse().map((h, i) => (
               <div key={i} className="flex items-center justify-between py-2.5 text-sm">
                 <span className="text-slate-400">{formatShortDate(h.date)}</span>
                 <span className="text-slate-300">{h.sets}×{h.reps} @ {h.weight}kg</span>
@@ -2179,6 +2226,8 @@ function MemberExerciseModal({ exerciseId, member, onClose }) {
   );
   const stats = useMemo(() => exerciseStats(hist), [hist]);
   const [metric, setMetric] = useState("weight");
+  const [range, setRange] = useState("all");
+  const rangedHist = useMemo(() => filterHistByRange(hist, range), [hist, range]);
 
   return (
     <Modal open={!!exerciseId} onClose={onClose} title={ex?.name || "Exercise"} size="lg">
@@ -2209,20 +2258,26 @@ function MemberExerciseModal({ exerciseId, member, onClose }) {
           <div>
             <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
               <SectionHeading eyebrow="Trend" title="Progress" />
-              <div className="flex gap-2">
-                {["weight", "volume", "reps"].map((m) => <Chip key={m} active={metric === m} onClick={() => setMetric(m)}>{m[0].toUpperCase() + m.slice(1)}</Chip>)}
+              <div className="flex flex-wrap items-center gap-3">
+                <RangeChips range={range} onChange={setRange} />
+                <div className="flex gap-2">
+                  {["weight", "volume", "reps"].map((m) => <Chip key={m} active={metric === m} onClick={() => setMetric(m)}>{m[0].toUpperCase() + m.slice(1)}</Chip>)}
+                </div>
               </div>
             </div>
-            <ExerciseChart hist={hist} metric={metric} />
+            <ExerciseChart hist={rangedHist} metric={metric} />
           </div>
 
           <div>
-            <SectionHeading eyebrow="History" title="Previous sessions" />
-            {hist.length === 0 ? (
-              <p className="text-sm text-slate-500">No sessions logged yet.</p>
+            <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
+              <SectionHeading eyebrow="History" title="Previous sessions" />
+              <RangeChips range={range} onChange={setRange} />
+            </div>
+            {rangedHist.length === 0 ? (
+              <p className="text-sm text-slate-500 mt-3">{hist.length === 0 ? "No sessions logged yet." : "No sessions in this range."}</p>
             ) : (
-              <div className="flex flex-col divide-y divide-white/5">
-                {hist.slice(-6).reverse().map((h, i) => (
+              <div className="flex flex-col divide-y divide-white/5 max-h-96 overflow-y-auto mt-2">
+                {rangedHist.slice().reverse().map((h, i) => (
                   <div key={i} className="flex items-center justify-between py-2.5 text-sm">
                     <span className="text-slate-400">{formatShortDate(h.date)}</span>
                     <span className="text-slate-300">{h.sets}×{h.reps} @ {h.weight}kg</span>
