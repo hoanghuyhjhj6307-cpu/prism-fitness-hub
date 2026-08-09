@@ -390,6 +390,24 @@ const ACTIVITY_LEVELS = [
   { id: "active", label: "Active", desc: "Hard exercise 6–7 days/week", mult: 1.725 },
   { id: "very_active", label: "Very active", desc: "Very hard training + physical job", mult: 1.9 },
 ];
+// The "workout goal" (GOALS, above) picks a training style — it says nothing
+// about whether someone should be eating in a deficit, a surplus, or at
+// maintenance, so calorieTargetFor/macroTargetsFor must not read from it.
+// DIET_GOALS is the separate, diet-specific phase: it adjusts the maintenance
+// TDEE by a percentage (a "cut" eats less than it burns, a "bulk" eats more,
+// "maintain" changes nothing) and nudges the protein-per-kg guideline higher
+// on a cut, which is standard cutting-phase coaching advice to protect
+// muscle in a deficit. These are still coaching-estimate percentages, not a
+// medical prescription — same caveat as calcBMR above.
+const DIET_GOALS = [
+  { id: "maintain", label: "Maintain", icon: "⚖️", desc: "Eat around maintenance — calorie target equals estimated TDEE.", kcalPct: 0, proteinPerKg: 1.8 },
+  { id: "cut", label: "Lose fat", icon: "🔥", desc: "~20% calorie deficit below TDEE, protein raised to protect muscle.", kcalPct: -0.20, proteinPerKg: 2.0 },
+  { id: "bulk", label: "Build muscle", icon: "💪", desc: "~12% calorie surplus above TDEE for lean gain.", kcalPct: 0.12, proteinPerKg: 1.8 },
+];
+const DEFAULT_DIET_GOAL = "maintain";
+function dietGoalInfo(id) {
+  return DIET_GOALS.find((g) => g.id === id) || DIET_GOALS.find((g) => g.id === DEFAULT_DIET_GOAL);
+}
 function computeBodyweightLoad(ex, addedWeight, bodyweightKg) {
   const bw = Number(bodyweightKg) || DEFAULT_BODYWEIGHT_KG;
   const pct = (ex && Number(ex.bwPercent)) || 100;
@@ -921,6 +939,7 @@ export function newMember({ id, name, role, status, avatarUrl }) {
     // ---- Diet add-on fields (extend this same member record, no second object) ----
     sex: DEFAULT_SEX,
     activityLevel: DEFAULT_ACTIVITY_LEVEL,
+    dietGoal: DEFAULT_DIET_GOAL,
     weightHistory: [],        // [{date, kg}] — bodyweightKg above always mirrors the latest entry
     calorieTargetOverride: null,
     proteinTargetOverride: null,
@@ -1029,7 +1048,7 @@ function normalizeState(s) {
   const members = Object.fromEntries(
     Object.entries(s.members || {}).map(([id, m]) => [id, {
       bodyweightKg: DEFAULT_BODYWEIGHT_KG, heightCm: DEFAULT_HEIGHT_CM, age: DEFAULT_AGE, avatarUrl: null,
-      sex: DEFAULT_SEX, activityLevel: DEFAULT_ACTIVITY_LEVEL, weightHistory: [], calorieTargetOverride: null,
+      sex: DEFAULT_SEX, activityLevel: DEFAULT_ACTIVITY_LEVEL, dietGoal: DEFAULT_DIET_GOAL, weightHistory: [], calorieTargetOverride: null,
       proteinTargetOverride: null,
       foodLog: {}, activityLog: {}, customMealTypes: [],
       ...m,
@@ -1164,7 +1183,9 @@ function calorieTargetFor(member) {
     heightCm: member?.heightCm ?? DEFAULT_HEIGHT_CM,
     age: member?.age ?? DEFAULT_AGE,
   });
-  return calcTDEE(bmr, member?.activityLevel || DEFAULT_ACTIVITY_LEVEL);
+  const tdee = calcTDEE(bmr, member?.activityLevel || DEFAULT_ACTIVITY_LEVEL);
+  const pct = dietGoalInfo(member?.dietGoal).kcalPct;
+  return Math.round(tdee * (1 + pct));
 }
 // Suggested macro split, derived the exact same way the calorie target is —
 // never stored, always recomputed live from current body data + calorie
@@ -1181,9 +1202,10 @@ function calorieTargetFor(member) {
 function macroTargetsFor(member) {
   const kcalTarget = calorieTargetFor(member);
   const weightKg = currentWeightKg(member);
+  const proteinPerKg = dietGoalInfo(member?.dietGoal).proteinPerKg;
   const proteinG = member?.proteinTargetOverride != null
     ? Math.round(member.proteinTargetOverride)
-    : Math.round((Number(weightKg) || DEFAULT_BODYWEIGHT_KG) * 1.8);
+    : Math.round((Number(weightKg) || DEFAULT_BODYWEIGHT_KG) * proteinPerKg);
   const proteinKcal = proteinG * 4;
   const fatKcal = kcalTarget * 0.25;
   const fatG = Math.round(fatKcal / 9);
@@ -2541,8 +2563,11 @@ function ExerciseChart({ hist, metric }) {
   }
   // With a wide range selected (e.g. "All" on a long history) there can be many points —
   // thin out dots and axis labels so the chart stays readable instead of a smear.
-  const dense = data.length > 30;
-  const tickInterval = dense ? Math.ceil(data.length / 8) : 0;
+  // (Was gated on data.length > 30, which never fired for a history of
+  // exactly 30 sessions — every label rendered and crumpled together.)
+  const dense = data.length > 14;
+  const maxTicks = 8;
+  const tickInterval = data.length > 10 ? Math.ceil(data.length / maxTicks) - 1 : 0;
   return (
     <ResponsiveContainer width="100%" height={224}>
       <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -3478,9 +3503,14 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove, onCopyProgr
         <Avatar name={member.name} swatch={member.avatar} photoUrl={member.avatarUrl} size="lg" ring />
         <div className="flex-1 min-w-[180px]">
           <h1 className="text-2xl font-black text-white flex items-center gap-2">{member.name}{member.role === "admin" && <ShieldCheck size={18} className="text-emerald-400" />}</h1>
-          <span className="inline-flex items-center gap-1.5 mt-1.5 text-xs font-semibold px-2.5 py-1 rounded-full bg-white/5 text-slate-300 border border-white/10">
-            {goalInfo(member.goal).icon} {goalInfo(member.goal).label}
-          </span>
+          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full bg-white/5 text-slate-300 border border-white/10">
+              {goalInfo(member.goal).icon} {goalInfo(member.goal).label}
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full bg-white/5 text-slate-300 border border-white/10">
+              {dietGoalInfo(member.dietGoal).icon} {dietGoalInfo(member.dietGoal).label}
+            </span>
+          </div>
         </div>
         <div className="flex items-center gap-6">
           <div className="flex flex-col items-center"><span className="text-xl font-bold text-orange-400 flex items-center gap-1"><Flame size={18} />{member.streak}</span><span className="text-[10px] text-slate-500">streak</span></div>
@@ -5482,6 +5512,7 @@ function BodySettingsCard({ me, onUpdate }) {
   const tdee = calcTDEE(bmr, me.activityLevel || DEFAULT_ACTIVITY_LEVEL);
   const target = calorieTargetFor(me);
   const macroTargets = macroTargetsFor(me);
+  const dietGoal = dietGoalInfo(me.dietGoal);
 
   return (
     <Card className="p-5">
@@ -5524,12 +5555,27 @@ function BodySettingsCard({ me, onUpdate }) {
         </div>
         <p className="text-[10px] text-slate-500 mt-1.5">{activityLevelInfo(me.activityLevel || DEFAULT_ACTIVITY_LEVEL).desc}</p>
       </div>
+      <div className="mb-4">
+        <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">Diet goal</label>
+        <div className="flex gap-1.5 flex-wrap">
+          {DIET_GOALS.map((g) => (
+            <Chip key={g.id} active={(me.dietGoal || DEFAULT_DIET_GOAL) === g.id} onClick={() => onUpdate({ dietGoal: g.id })} className="!px-2.5 !py-1 text-xs">
+              {g.icon} {g.label}
+            </Chip>
+          ))}
+        </div>
+        <p className="text-[10px] text-slate-500 mt-1.5">{dietGoal.desc}</p>
+      </div>
       <div className="rounded-2xl bg-white/[0.03] border border-white/5 p-4 flex flex-col gap-1.5 mb-4">
         <div className="flex items-center justify-between text-sm"><span className="text-slate-400">BMR</span><span className="text-white font-semibold">{bmr} kcal</span></div>
         <div className="flex items-center justify-between text-sm"><span className="text-slate-400">× Activity ({activityLevelInfo(me.activityLevel || DEFAULT_ACTIVITY_LEVEL).label})</span><span className="text-white font-semibold">{tdee} kcal</span></div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-slate-400">{dietGoal.label} ({dietGoal.kcalPct === 0 ? "no change" : `${dietGoal.kcalPct > 0 ? "+" : ""}${Math.round(dietGoal.kcalPct * 100)}%`})</span>
+          <span className="text-white font-semibold">{me.calorieTargetOverride == null ? target : Math.round(tdee * (1 + dietGoal.kcalPct))} kcal</span>
+        </div>
         <div className="h-px bg-white/10 my-1" />
         <div className="flex items-center justify-between"><span className="text-sm font-bold text-white">Daily target</span><span className="text-lg font-black text-white">{target} kcal</span></div>
-        <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1"><Info size={10} className="shrink-0" /> Estimated only — not a medical calculation.</p>
+        <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1"><Info size={10} className="shrink-0" /> Estimated only — not a medical calculation.{me.calorieTargetOverride != null && " Manual override below is currently active and takes priority over this."}</p>
       </div>
       <div className="flex items-center gap-2 flex-wrap mb-5">
         <span className="text-xs text-slate-400">Manual override</span>
@@ -5544,10 +5590,10 @@ function BodySettingsCard({ me, onUpdate }) {
       </div>
 
       <div className="rounded-2xl bg-white/[0.03] border border-white/5 p-4 flex flex-col gap-1.5 mb-4">
-        <div className="flex items-center justify-between text-sm"><span className="text-slate-400">Protein (1.8g × bodyweight)</span><span className="text-white font-semibold">{Math.round((Number(weight) || DEFAULT_BODYWEIGHT_KG) * 1.8)}g</span></div>
+        <div className="flex items-center justify-between text-sm"><span className="text-slate-400">Protein ({dietGoal.proteinPerKg}g × bodyweight)</span><span className="text-white font-semibold">{Math.round((Number(weight) || DEFAULT_BODYWEIGHT_KG) * dietGoal.proteinPerKg)}g</span></div>
         <div className="h-px bg-white/10 my-1" />
         <div className="flex items-center justify-between"><span className="text-sm font-bold text-white">Daily protein target</span><span className="text-lg font-black text-white">{macroTargets.proteinG}g</span></div>
-        <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1"><Info size={10} className="shrink-0" /> 1.8g per kg bodyweight is a common strength/physique guideline — not a medical calculation.</p>
+        <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1"><Info size={10} className="shrink-0" /> {dietGoal.proteinPerKg}g per kg bodyweight — {me.dietGoal === "cut" ? "raised while cutting to help protect muscle" : "a common strength/physique guideline"} — not a medical calculation.</p>
       </div>
       <div className="flex items-center gap-2 flex-wrap mb-5">
         <span className="text-xs text-slate-400">Manual override</span>
@@ -5592,8 +5638,17 @@ function DietAreaChart({ data, dataKey, color = "#d16d94", gradId }) {
   if (data.length < 2) {
     return <div className="h-40 flex items-center justify-center text-sm text-slate-500">Not enough data yet to chart this.</div>;
   }
-  const dense = data.length > 30;
-  const tickInterval = dense ? Math.ceil(data.length / 8) : 0;
+  // Hide per-point dots once the line gets crowded (e.g. the 30-day "Month"
+  // view) — was previously gated on data.length > 30, which never fires
+  // since month view tops out at exactly 30 points.
+  const dense = data.length > 14;
+  // Cap the number of x-axis date labels shown to ~6 no matter the range, so
+  // "Month" doesn't render all 30 "Jul 11", "Jul 12", ... labels crushed on
+  // top of each other (illegible, and especially bad on a narrow mobile
+  // screen). Recharts' `interval` is "ticks to skip between shown ticks", so
+  // interval = ceil(length / maxTicks) - 1 spaces ~maxTicks labels evenly.
+  const maxTicks = 6;
+  const tickInterval = data.length > 10 ? Math.ceil(data.length / maxTicks) - 1 : 0;
   return (
     <ResponsiveContainer width="100%" height={180}>
       <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -5616,6 +5671,11 @@ function DietAreaChart({ data, dataKey, color = "#d16d94", gradId }) {
 // for any numeric series — hides per-bar labels once there are too many (month view).
 function DietBarChart({ data, valueKey, labelKey }) {
   const max = Math.max(1, ...data.map((d) => d[valueKey]));
+  // Same idea as DietAreaChart's tick thinning: show at most ~6 date labels
+  // instead of either cramming in all 30 (crumpled) or hiding every label
+  // once past 14 bars (which left month view with no dates at all).
+  const maxLabels = 6;
+  const labelEvery = data.length > 10 ? Math.ceil(data.length / maxLabels) : 1;
   return (
     <div className="flex items-end gap-1 h-20">
       {data.map((d, i) => (
@@ -5623,7 +5683,7 @@ function DietBarChart({ data, valueKey, labelKey }) {
           <div className="w-full rounded-t-lg bg-white/5 relative overflow-hidden" style={{ height: 64 }}>
             <div className={`absolute bottom-0 left-0 right-0 rounded-t-lg ${GRAD}`} style={{ height: `${(d[valueKey] / max) * 100}%`, transition: "height .8s cubic-bezier(.34,1.56,.64,1)" }} />
           </div>
-          {data.length <= 14 && <span className="text-[9px] text-slate-500">{d[labelKey]}</span>}
+          <span className="text-[9px] text-slate-500 h-3 leading-3">{i % labelEvery === 0 ? d[labelKey] : ""}</span>
         </div>
       ))}
     </div>
