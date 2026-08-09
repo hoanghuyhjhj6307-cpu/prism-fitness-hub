@@ -1006,9 +1006,11 @@ function AchievementsGrid({ unlockedIds = [] }) {
   const PAGE_SIZE = 15; // divides evenly into both the 3-col mobile and 5-col desktop grid
   const pageCount = Math.ceil(ACHIEVEMENTS.length / PAGE_SIZE);
   const [page, setPage] = useState(0);
+  const [selected, setSelected] = useState(null);
   const clampedPage = Math.min(page, pageCount - 1);
   const items = ACHIEVEMENTS.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
   const unlockedSet = new Set(unlockedIds);
+  const selectedUnlocked = selected ? unlockedSet.has(selected.id) : false;
 
   return (
     <div>
@@ -1016,10 +1018,18 @@ function AchievementsGrid({ unlockedIds = [] }) {
         {items.map((a) => {
           const unlocked = unlockedSet.has(a.id);
           return (
-            <div key={a.id} title={a.desc} className={`flex flex-col items-center gap-1.5 p-3 rounded-2xl border text-center ${unlocked ? "bg-amber-500/10 border-amber-500/30" : "bg-white/[0.02] border-white/5 opacity-40"}`}>
+            <button
+              key={a.id}
+              type="button"
+              onClick={() => setSelected(a)}
+              aria-label={`${a.name} — tap to see what this badge means`}
+              className={`flex flex-col items-center gap-1.5 p-3 rounded-2xl border text-center transition-colors focus:outline-none focus:ring-2 focus:ring-pink-400/50 ${
+                unlocked ? "bg-amber-500/10 border-amber-500/30 hover:bg-amber-500/20" : "bg-white/[0.02] border-white/5 opacity-40 hover:opacity-70"
+              }`}
+            >
               <span className="text-2xl">{a.icon}</span>
               <span className="text-[10px] text-slate-300 font-medium leading-tight">{a.name}</span>
-            </div>
+            </button>
           );
         })}
       </div>
@@ -1040,6 +1050,24 @@ function AchievementsGrid({ unlockedIds = [] }) {
           ))}
         </div>
       )}
+
+      <Modal open={!!selected} onClose={() => setSelected(null)} title={selected?.name || ""}>
+        {selected && (
+          <div className="flex flex-col items-center text-center gap-3 py-2">
+            <div className={`w-16 h-16 rounded-2xl flex items-center justify-center text-3xl border ${
+              selectedUnlocked ? "bg-amber-500/10 border-amber-500/30" : "bg-white/[0.03] border-white/10"
+            }`}>
+              {selected.icon}
+            </div>
+            <p className="text-slate-300 text-sm">{selected.desc}</p>
+            <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${
+              selectedUnlocked ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" : "bg-white/5 text-slate-500 border border-white/10"
+            }`}>
+              {selectedUnlocked ? "Unlocked" : "Locked"}
+            </span>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -3729,9 +3757,11 @@ function recomputeExercisePRFlags(originalWorklogs, workingWorklogs, exerciseId,
 // Log or edit a single exercise's numbers for an arbitrary date (past, present,
 // or otherwise), used by the Day Detail page reached from the calendar. This
 // mirrors completeExerciseOnMember/handleEditDone but is date-generic and —
-// deliberately — never touches streaks or syncs program targets, since those
-// are sequential/"current state" concepts that a retroactive edit shouldn't
-// silently rewrite.
+// deliberately — never touches streaks, since those are a sequential
+// "current state" concept that a retroactive edit shouldn't silently rewrite.
+// (Program-target syncing is handled separately by the caller via
+// syncProgramToLatestLog, since that should follow the latest log by date
+// rather than by which page made the edit.)
 function upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched) {
   const hist = m.history[exerciseId] || [];
   const existingIdx = hist.findIndex((h) => h.date === iso);
@@ -3816,34 +3846,46 @@ function clearWorklogEntryForDate(m, iso, exerciseId) {
 }
 
 // Keep a program's planned sets/reps/target weight in sync with what was
-// actually logged in the session, so the Program tab shows current numbers
-// instead of whatever was typed in when the program was first built.
-// Only touches the single exercise slot that was logged today (matched by
-// its program-instance id, inside today's day) — every other day, exercise,
-// and program is left completely untouched.
-function syncProgramTarget(program, dayKey, inst) {
-  if (!program || !inst) return program;
-  const day = program.days?.[dayKey];
-  if (!day || day.type !== "workout") return program;
-  const idx = (day.exercises || []).findIndex((e) => e.id === inst.id);
-  if (idx === -1) return program;
-  const pex = day.exercises[idx];
-  const nextPex = {
-    ...pex,
-    sets: inst.sets ?? pex.sets,
-    reps: inst.reps ?? pex.reps,
-    targetWeight: inst.weight ?? pex.targetWeight,
-    targetAddedWeight: inst.addedWeight !== undefined ? inst.addedWeight : pex.targetAddedWeight,
-  };
-  const unchanged =
-    nextPex.sets === pex.sets &&
-    nextPex.reps === pex.reps &&
-    nextPex.targetWeight === pex.targetWeight &&
-    nextPex.targetAddedWeight === pex.targetAddedWeight;
-  if (unchanged) return program;
-  const exercises = [...day.exercises];
-  exercises[idx] = nextPex;
-  return { ...program, days: { ...program.days, [dayKey]: { ...day, exercises } } };
+// actually logged, so the Program tab always shows the numbers from the
+// latest previous log — not whatever was typed in when the program was
+// first built, and not stale numbers left over from an earlier session.
+//
+// `hist` is the member's full (chronologically sorted, see
+// upsertHistoryEntry) history array for `exerciseId`; its last entry is
+// always the latest log for that exercise, regardless of which page/date
+// produced it. Every occurrence of that exercise across every day of the
+// program is updated to match — e.g. an exercise scheduled on both "Push"
+// and "Legs" days stays consistent everywhere it appears, and a log made or
+// edited from the calendar's Day Detail page (any date) is picked up too.
+function syncProgramToLatestLog(program, exerciseId, hist) {
+  if (!program || !exerciseId || !hist || hist.length === 0) return program;
+  const latest = hist[hist.length - 1];
+  let changed = false;
+  const days = { ...program.days };
+  for (const dayKey of Object.keys(days)) {
+    const day = days[dayKey];
+    if (!day || day.type !== "workout" || !(day.exercises || []).some((e) => e.exerciseId === exerciseId)) continue;
+    const exercises = day.exercises.map((pex) => {
+      if (pex.exerciseId !== exerciseId) return pex;
+      const nextPex = {
+        ...pex,
+        sets: latest.sets ?? pex.sets,
+        reps: latest.reps ?? pex.reps,
+        targetWeight: latest.weight ?? pex.targetWeight,
+        targetAddedWeight: latest.addedWeight !== undefined ? latest.addedWeight : pex.targetAddedWeight,
+      };
+      const unchanged =
+        nextPex.sets === pex.sets &&
+        nextPex.reps === pex.reps &&
+        nextPex.targetWeight === pex.targetWeight &&
+        nextPex.targetAddedWeight === pex.targetAddedWeight;
+      if (!unchanged) changed = true;
+      return unchanged ? pex : nextPex;
+    });
+    days[dayKey] = { ...day, exercises };
+  }
+  if (!changed) return program;
+  return { ...program, days };
 }
 
 export default function App() {
@@ -4175,7 +4217,7 @@ export default function App() {
     const before = m.unlocked || [];
     const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
     const { next, xpGain, allDone } = completeExerciseOnMember(m, finalizedInst, allInstances, program);
-    const updatedProgram = syncProgramTarget(program, todayDayKey(), finalizedInst);
+    const updatedProgram = syncProgramToLatestLog(program, finalizedInst.exerciseId, next.history[finalizedInst.exerciseId]);
     const programs = updatedProgram && updatedProgram !== program ? { ...state.programs, [updatedProgram.id]: updatedProgram } : state.programs;
     persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
     if (allDone && finalizedInst.isPR) showToast(`Workout complete + new PR! +${xpGain} XP`, "🏆");
@@ -4223,7 +4265,7 @@ export default function App() {
     next.unlocked = recomputeAchievements(next);
 
     const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
-    const updatedProgram = syncProgramTarget(program, todayDayKey(), updatedInst);
+    const updatedProgram = syncProgramToLatestLog(program, exerciseId, next.history[exerciseId]);
     const programs = updatedProgram && updatedProgram !== program ? { ...state.programs, [updatedProgram.id]: updatedProgram } : state.programs;
 
     persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
@@ -4240,15 +4282,19 @@ export default function App() {
 
   // Log or edit an exercise's numbers for any date from the calendar's Day
   // Detail page — past sessions included. Isolated from the Today-page flow
-  // above: no streak changes, no program-target syncing, so it can't ripple
-  // into anything else in the app.
+  // above in every other respect (no streak changes), but program targets
+  // are still synced to whatever is now the latest log for this exercise —
+  // an edit here can be the most recent entry for an exercise just as easily
+  // as one made on the Today page, and the Program tab should reflect that.
   const handleEditWorklogForDate = (iso, exerciseId, patch) => {
     const m = state.members[session.userId];
     const before = m.unlocked || [];
     const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
     const sched = program?.days?.[dayKeyForISO(iso)];
     const { next, newIsPR, workoutsDelta } = upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched);
-    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    const updatedProgram = syncProgramToLatestLog(program, exerciseId, next.history[exerciseId]);
+    const programs = updatedProgram && updatedProgram !== program ? { ...state.programs, [updatedProgram.id]: updatedProgram } : state.programs;
+    persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
     if (newIsPR) showToast("New personal record!", "🏆");
     else if (workoutsDelta > 0) showToast("Session marked complete", "🎉");
     else showToast("Log saved", "✏️");
@@ -4259,12 +4305,18 @@ export default function App() {
     });
   };
 
-  // Revert a logged exercise on any date back to "not logged".
+  // Revert a logged exercise on any date back to "not logged". If that
+  // entry was the latest log for this exercise, the program re-syncs to
+  // whatever is now the latest remaining entry (or is left untouched if no
+  // history remains at all).
   const handleClearWorklogForDate = (iso, exerciseId) => {
     const m = state.members[session.userId];
     const { next, changed } = clearWorklogEntryForDate(m, iso, exerciseId);
     if (!changed) return;
-    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
+    const updatedProgram = syncProgramToLatestLog(program, exerciseId, next.history[exerciseId]);
+    const programs = updatedProgram && updatedProgram !== program ? { ...state.programs, [updatedProgram.id]: updatedProgram } : state.programs;
+    persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
     showToast("Log cleared", "🗑️");
   };
 
