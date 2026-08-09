@@ -650,7 +650,22 @@ const MEAL_TYPES = [
   { id: "dinner", label: "Dinner", icon: "🌙" },
   { id: "snack", label: "Snack", icon: "🍎" },
 ];
-const FOOD_CATEGORIES = ["Carbs", "Protein", "Dairy", "Fruits", "Vegetables", "Snacks", "Drinks"];
+// Icon choices offered when a member creates their own meal slot — not
+// everyone eats on a strict breakfast/lunch/dinner/snack schedule; someone
+// doing 5-6 meals a day needs room for "Pre-workout", "Second breakfast", etc.
+const MEAL_ICON_CHOICES = ["🍽️", "🥗", "🥪", "🍳", "🥞", "🍲", "🌮", "🍱", "🥤", "🧋", "☕", "🍇", "🍩", "🥛"];
+// Builds a brand-new custom meal type. Kept separate from the four fixed
+// MEAL_TYPES above (which are never editable/deletable) and stored per-member
+// in customMealTypes, since everyone's meal structure differs.
+function newMealType({ label, icon }) {
+  return { id: uid("meal"), label: label.trim(), icon: icon || MEAL_ICON_CHOICES[0] };
+}
+// The full list of meal slots to render for a given member: the four fixed
+// ones plus whatever they've added themselves.
+function mealTypesFor(me) {
+  return [...MEAL_TYPES, ...(me?.customMealTypes || [])];
+}
+const FOOD_CATEGORIES = ["Vietnamese", "Carbs", "Protein", "Dairy", "Fruits", "Vegetables", "Snacks", "Drinks"];
 // Every unit the app supports for logging/creating a food (spec §10).
 const FOOD_UNITS = ["g", "kg", "ml", "L", "serving", "piece", "slice", "bowl", "cup"];
 
@@ -734,6 +749,75 @@ const FOOD_LIBRARY = [
   { id: "f_beer", name: "Beer", category: "Drinks", icon: "🍺", baseUnit: "ml", baseAmount: 100, kcal: 43, protein: 0.5, carbs: 3.6, fat: 0 },
   { id: "f_bubble_tea", name: "Bubble tea", category: "Drinks", icon: "🧋", baseUnit: "cup", baseAmount: 1, kcal: 350, protein: 2, carbs: 60, fat: 10 },
   { id: "f_coconut_water", name: "Coconut water", category: "Drinks", icon: "🥥", baseUnit: "ml", baseAmount: 100, kcal: 19, protein: 0.2, carbs: 3.7, fat: 0.2 },
+
+  // ============================================================================
+  // ---- Vietnamese — common everyday dishes (spec addition: full local menu) ----
+  // Composite home-cooked and street-food dishes, grouped as their own category
+  // since each is a mixed meal (carb+protein+veg together) rather than a single
+  // ingredient like the sections above. Nutrition is estimated for a typical
+  // single serving as eaten, not per 100g, since that's how these are ordered.
+  // ============================================================================
+
+  // -- Noodle soups (phở, bún, hủ tiếu, cháo…) --
+  { id: "f_vn_pho_bo", name: "Phở bò (beef noodle soup)", category: "Vietnamese", icon: "🍜", baseUnit: "bowl", baseAmount: 1, kcal: 450, protein: 25, carbs: 60, fat: 10 },
+  { id: "f_vn_pho_ga", name: "Phở gà (chicken noodle soup)", category: "Vietnamese", icon: "🍜", baseUnit: "bowl", baseAmount: 1, kcal: 400, protein: 24, carbs: 55, fat: 7 },
+  { id: "f_vn_bun_bo_hue", name: "Bún bò Huế", category: "Vietnamese", icon: "🍜", baseUnit: "bowl", baseAmount: 1, kcal: 470, protein: 24, carbs: 55, fat: 16 },
+  { id: "f_vn_bun_rieu", name: "Bún riêu (crab & tomato noodle soup)", category: "Vietnamese", icon: "🍜", baseUnit: "bowl", baseAmount: 1, kcal: 380, protein: 18, carbs: 50, fat: 12 },
+  { id: "f_vn_hu_tieu", name: "Hủ tiếu", category: "Vietnamese", icon: "🍜", baseUnit: "bowl", baseAmount: 1, kcal: 420, protein: 20, carbs: 55, fat: 12 },
+  { id: "f_vn_mi_quang", name: "Mì Quảng", category: "Vietnamese", icon: "🍜", baseUnit: "bowl", baseAmount: 1, kcal: 460, protein: 22, carbs: 55, fat: 16 },
+  { id: "f_vn_banh_canh", name: "Bánh canh giò heo", category: "Vietnamese", icon: "🍲", baseUnit: "bowl", baseAmount: 1, kcal: 480, protein: 20, carbs: 60, fat: 16 },
+  { id: "f_vn_chao_ga", name: "Cháo gà (chicken rice porridge)", category: "Vietnamese", icon: "🥣", baseUnit: "bowl", baseAmount: 1, kcal: 260, protein: 15, carbs: 35, fat: 6 },
+  { id: "f_vn_chao_long", name: "Cháo lòng (pork organ porridge)", category: "Vietnamese", icon: "🥣", baseUnit: "bowl", baseAmount: 1, kcal: 350, protein: 18, carbs: 35, fat: 14 },
+
+  // -- Bánh mì, xôi & other savory breakfasts --
+  { id: "f_vn_banh_mi_thit", name: "Bánh mì thịt", category: "Vietnamese", icon: "🥖", baseUnit: "piece", baseAmount: 1, kcal: 450, protein: 18, carbs: 48, fat: 20 },
+  { id: "f_vn_banh_mi_trung", name: "Bánh mì ốp la (egg bánh mì)", category: "Vietnamese", icon: "🥖", baseUnit: "piece", baseAmount: 1, kcal: 350, protein: 14, carbs: 42, fat: 14 },
+  { id: "f_vn_xoi_man", name: "Xôi mặn (savory sticky rice)", category: "Vietnamese", icon: "🍚", baseUnit: "bowl", baseAmount: 1, kcal: 450, protein: 15, carbs: 65, fat: 14 },
+  { id: "f_vn_xoi_xeo", name: "Xôi xéo (mung bean sticky rice)", category: "Vietnamese", icon: "🍚", baseUnit: "bowl", baseAmount: 1, kcal: 420, protein: 10, carbs: 70, fat: 12 },
+  { id: "f_vn_banh_cuon", name: "Bánh cuốn", category: "Vietnamese", icon: "🥟", baseUnit: "serving", baseAmount: 1, kcal: 300, protein: 10, carbs: 45, fat: 8 },
+  { id: "f_vn_banh_gio", name: "Bánh giò", category: "Vietnamese", icon: "🥟", baseUnit: "piece", baseAmount: 1, kcal: 250, protein: 6, carbs: 40, fat: 7 },
+
+  // -- Rice plates & family-meal mains --
+  { id: "f_vn_com_tam", name: "Cơm tấm sườn bì chả", category: "Vietnamese", icon: "🍚", baseUnit: "serving", baseAmount: 1, kcal: 750, protein: 35, carbs: 90, fat: 28 },
+  { id: "f_vn_com_ga", name: "Cơm gà (chicken rice)", category: "Vietnamese", icon: "🍚", baseUnit: "serving", baseAmount: 1, kcal: 550, protein: 28, carbs: 70, fat: 18 },
+  { id: "f_vn_com_suon", name: "Cơm sườn nướng", category: "Vietnamese", icon: "🍚", baseUnit: "serving", baseAmount: 1, kcal: 650, protein: 30, carbs: 75, fat: 24 },
+  { id: "f_vn_com_chien", name: "Cơm chiên (fried rice)", category: "Vietnamese", icon: "🍚", baseUnit: "bowl", baseAmount: 1, kcal: 450, protein: 12, carbs: 60, fat: 16 },
+  { id: "f_vn_thit_kho", name: "Thịt kho tàu (braised pork & egg)", category: "Vietnamese", icon: "🍖", baseUnit: "serving", baseAmount: 1, kcal: 400, protein: 22, carbs: 8, fat: 30 },
+  { id: "f_vn_ca_kho", name: "Cá kho tộ (caramelized braised fish)", category: "Vietnamese", icon: "🐟", baseUnit: "serving", baseAmount: 1, kcal: 300, protein: 25, carbs: 8, fat: 18 },
+  { id: "f_vn_ga_kho_gung", name: "Gà kho gừng (ginger braised chicken)", category: "Vietnamese", icon: "🍗", baseUnit: "serving", baseAmount: 1, kcal: 320, protein: 26, carbs: 6, fat: 20 },
+  { id: "f_vn_ga_luoc", name: "Gà luộc (boiled chicken)", category: "Vietnamese", icon: "🍗", baseUnit: "serving", baseAmount: 1, kcal: 220, protein: 27, carbs: 0, fat: 12 },
+  { id: "f_vn_canh_chua", name: "Canh chua cá (sweet & sour fish soup)", category: "Vietnamese", icon: "🍲", baseUnit: "bowl", baseAmount: 1, kcal: 180, protein: 14, carbs: 14, fat: 8 },
+  { id: "f_vn_canh_rau", name: "Canh rau (vegetable soup)", category: "Vietnamese", icon: "🍲", baseUnit: "bowl", baseAmount: 1, kcal: 80, protein: 4, carbs: 10, fat: 2.5 },
+  { id: "f_vn_rau_muong_xao", name: "Rau muống xào tỏi", category: "Vietnamese", icon: "🥬", baseUnit: "serving", baseAmount: 1, kcal: 120, protein: 4, carbs: 8, fat: 8 },
+  { id: "f_vn_dau_hu_sot_ca", name: "Đậu hũ sốt cà chua", category: "Vietnamese", icon: "🍅", baseUnit: "serving", baseAmount: 1, kcal: 180, protein: 9, carbs: 10, fat: 11 },
+  { id: "f_vn_trung_chien", name: "Trứng chiên (Vietnamese fried omelet)", category: "Vietnamese", icon: "🍳", baseUnit: "serving", baseAmount: 1, kcal: 200, protein: 12, carbs: 2, fat: 16 },
+  { id: "f_vn_cha_lua", name: "Chả lụa (pork sausage)", category: "Vietnamese", icon: "🥓", baseUnit: "g", baseAmount: 100, kcal: 150, protein: 15, carbs: 3, fat: 9 },
+
+  // -- Noodles & street food --
+  { id: "f_vn_bun_cha", name: "Bún chả Hà Nội", category: "Vietnamese", icon: "🍢", baseUnit: "serving", baseAmount: 1, kcal: 600, protein: 30, carbs: 65, fat: 24 },
+  { id: "f_vn_bun_thit_nuong", name: "Bún thịt nướng", category: "Vietnamese", icon: "🍜", baseUnit: "bowl", baseAmount: 1, kcal: 520, protein: 26, carbs: 60, fat: 18 },
+  { id: "f_vn_goi_cuon", name: "Gỏi cuốn (fresh spring roll)", category: "Vietnamese", icon: "🥢", baseUnit: "piece", baseAmount: 1, kcal: 75, protein: 5, carbs: 10, fat: 2 },
+  { id: "f_vn_cha_gio", name: "Chả giò / nem rán (fried spring roll)", category: "Vietnamese", icon: "🥟", baseUnit: "piece", baseAmount: 1, kcal: 80, protein: 3, carbs: 6, fat: 5 },
+  { id: "f_vn_banh_xeo", name: "Bánh xèo", category: "Vietnamese", icon: "🥞", baseUnit: "serving", baseAmount: 1, kcal: 350, protein: 12, carbs: 35, fat: 18 },
+  { id: "f_vn_banh_khot", name: "Bánh khọt", category: "Vietnamese", icon: "🥞", baseUnit: "serving", baseAmount: 1, kcal: 350, protein: 10, carbs: 40, fat: 16 },
+  { id: "f_vn_banh_bao", name: "Bánh bao", category: "Vietnamese", icon: "🥟", baseUnit: "piece", baseAmount: 1, kcal: 250, protein: 9, carbs: 35, fat: 8 },
+  { id: "f_vn_nem_nuong", name: "Nem nướng (grilled pork skewers)", category: "Vietnamese", icon: "🍢", baseUnit: "serving", baseAmount: 1, kcal: 280, protein: 20, carbs: 12, fat: 17 },
+  { id: "f_vn_banh_trang_tron", name: "Bánh tráng trộn (rice paper salad)", category: "Vietnamese", icon: "🌶️", baseUnit: "serving", baseAmount: 1, kcal: 300, protein: 8, carbs: 38, fat: 13 },
+  { id: "f_vn_hot_vit_lon", name: "Trứng vịt lộn (balut)", category: "Vietnamese", icon: "🥚", baseUnit: "piece", baseAmount: 1, kcal: 180, protein: 13, carbs: 4, fat: 12 },
+
+  // -- Desserts & sweet snacks --
+  { id: "f_vn_che_dau_xanh", name: "Chè đậu xanh (mung bean sweet soup)", category: "Vietnamese", icon: "🍮", baseUnit: "bowl", baseAmount: 1, kcal: 200, protein: 6, carbs: 38, fat: 3 },
+  { id: "f_vn_che_ba_mau", name: "Chè ba màu (three-color dessert)", category: "Vietnamese", icon: "🍮", baseUnit: "bowl", baseAmount: 1, kcal: 250, protein: 4, carbs: 48, fat: 5 },
+  { id: "f_vn_banh_flan", name: "Bánh flan (Vietnamese crème caramel)", category: "Vietnamese", icon: "🍮", baseUnit: "piece", baseAmount: 1, kcal: 150, protein: 4, carbs: 22, fat: 6 },
+  { id: "f_vn_banh_chung", name: "Bánh chưng", category: "Vietnamese", icon: "🍙", baseUnit: "slice", baseAmount: 1, kcal: 200, protein: 5, carbs: 32, fat: 6 },
+  { id: "f_vn_sua_chua_nep_cam", name: "Sữa chua nếp cẩm (yogurt with black sticky rice)", category: "Vietnamese", icon: "🍨", baseUnit: "bowl", baseAmount: 1, kcal: 250, protein: 7, carbs: 42, fat: 6 },
+
+  // -- Everyday drinks --
+  { id: "f_vn_tra_da", name: "Trà đá (iced tea)", category: "Vietnamese", icon: "🧊", baseUnit: "cup", baseAmount: 1, kcal: 5, protein: 0, carbs: 1, fat: 0 },
+  { id: "f_vn_nuoc_mia", name: "Nước mía (sugarcane juice)", category: "Vietnamese", icon: "🥤", baseUnit: "cup", baseAmount: 1, kcal: 180, protein: 0, carbs: 45, fat: 0 },
+  { id: "f_vn_sinh_to_bo", name: "Sinh tố bơ (avocado smoothie)", category: "Vietnamese", icon: "🥑", baseUnit: "cup", baseAmount: 1, kcal: 350, protein: 5, carbs: 35, fat: 22 },
+  { id: "f_vn_nuoc_chanh", name: "Nước chanh (lime juice)", category: "Vietnamese", icon: "🍋", baseUnit: "cup", baseAmount: 1, kcal: 60, protein: 0, carbs: 15, fat: 0 },
+  { id: "f_vn_sua_dau_nanh", name: "Sữa đậu nành (soy milk)", category: "Vietnamese", icon: "🥛", baseUnit: "cup", baseAmount: 1, kcal: 130, protein: 7, carbs: 14, fat: 5 },
 ];
 
 // "Estimate a meal" mode for restaurant/eating-out food, per spec — these are
@@ -841,6 +925,7 @@ export function newMember({ id, name, role, status, avatarUrl }) {
     calorieTargetOverride: null,
     foodLog: {},              // { [iso]: [ {id, meal, source, foodId, name, amount, unit, kcal, protein, carbs, fat, note} ] }
     activityLog: {},          // { [iso]: { steps, workoutMinutes } } — workout *completion* itself still comes from worklogs
+    customMealTypes: [],      // [ {id, label, icon} ] — meal slots this member added beyond breakfast/lunch/dinner/snack
   };
 }
 function recomputeAchievements(m) {
@@ -944,7 +1029,7 @@ function normalizeState(s) {
     Object.entries(s.members || {}).map(([id, m]) => [id, {
       bodyweightKg: DEFAULT_BODYWEIGHT_KG, heightCm: DEFAULT_HEIGHT_CM, age: DEFAULT_AGE, avatarUrl: null,
       sex: DEFAULT_SEX, activityLevel: DEFAULT_ACTIVITY_LEVEL, weightHistory: [], calorieTargetOverride: null,
-      foodLog: {}, activityLog: {},
+      foodLog: {}, activityLog: {}, customMealTypes: [],
       ...m,
     }])
   );
@@ -1030,6 +1115,12 @@ function emptyAppState() {
 function activityLevelInfo(id) {
   return ACTIVITY_LEVELS.find((a) => a.id === id) || ACTIVITY_LEVELS.find((a) => a.id === DEFAULT_ACTIVITY_LEVEL);
 }
+// Rounds to one decimal place — used for macro grams (protein/carbs/fat) and
+// weight deltas, where the old shared helper (now roundHalf, see Primitives)
+// snapped to the nearest 0.5 instead. That was fine for a bodyweight +/-
+// stepper but silently mangled anything finer: a true 0.3kg weight change
+// displayed as "0.5kg", and 26.3g of protein displayed as "26.5g".
+function round1(n) { return Math.round(n * 10) / 10; }
 // Mifflin-St Jeor — the standard, widely-used estimate. Like any BMR formula,
 // this is an estimate, not a medical measurement (see calorieTargetFor below).
 function calcBMR({ sex, weightKg, heightCm, age }) {
@@ -1072,6 +1163,25 @@ function calorieTargetFor(member) {
     age: member?.age ?? DEFAULT_AGE,
   });
   return calcTDEE(bmr, member?.activityLevel || DEFAULT_ACTIVITY_LEVEL);
+}
+// Suggested macro split, derived the exact same way the calorie target is —
+// never stored, always recomputed live from current body data + calorie
+// target, so it stays in sync with weight/activity/override automatically
+// like everything else in this file. Protein is anchored to bodyweight (a
+// widely-used strength/physique coaching guideline — see calcBMR's comment
+// for the same "estimate, not a lab measurement" caveat), fat gets a fixed
+// share of total calories, and carbs take the remainder. This is the same
+// three-step approach most calorie-tracking apps use once total calories are
+// already known — nothing here is stored on the member record.
+function macroTargetsFor(member) {
+  const kcalTarget = calorieTargetFor(member);
+  const weightKg = currentWeightKg(member);
+  const proteinG = Math.round((Number(weightKg) || DEFAULT_BODYWEIGHT_KG) * 1.8);
+  const proteinKcal = proteinG * 4;
+  const fatKcal = kcalTarget * 0.25;
+  const fatG = Math.round(fatKcal / 9);
+  const carbsG = Math.max(0, Math.round((kcalTarget - proteinKcal - fatKcal) / 4));
+  return { proteinG, carbsG, fatG };
 }
 // One dated entry per day — logging a new weight for a date that's already
 // logged corrects that day rather than creating a duplicate history row.
@@ -1199,21 +1309,40 @@ function datesInRange(startISO, endISO) {
 // Weekly/monthly rollups (spec §18) — every number here is derived live from
 // foodLog/activityLog/weightHistory, never stored separately, so editing a
 // single day's food always updates these on the next render for free.
+// Averages are per LOGGED day, not per calendar day, for every metric here —
+// previously avgKcal divided by days-with-food while avgSteps/avgMinutes
+// divided by the full date range, so a week with food logged on only 2 days
+// showed a misleadingly "clean" avgKcal (just those 2 days) next to an
+// avgSteps dragged down by the 5 unlogged zero-step days. Averaging all three
+// the same way keeps them comparable, and the day counts let the UI say
+// exactly how many days each average is based on instead of implying full
+// coverage.
 function dietStatsForRange(member, startISO, endISO) {
   const dates = datesInRange(startISO, endISO);
   const kcalPerDay = dates.map((d) => totalKcalForDay(member, d));
   const stepsPerDay = dates.map((d) => activityForDay(member, d).steps || 0);
   const minutesPerDay = dates.map((d) => workoutSummaryForDay(member, d).minutes || 0);
+  const macrosPerDay = dates.map((d) => macrosForDay(member, d));
   const daysWithFood = kcalPerDay.filter((k) => k > 0).length;
+  const daysWithSteps = stepsPerDay.filter((s) => s > 0).length;
+  const daysWithMinutes = minutesPerDay.filter((m) => m > 0).length;
   const totalKcal = kcalPerDay.reduce((a, b) => a + b, 0);
   const totalSteps = stepsPerDay.reduce((a, b) => a + b, 0);
   const totalMinutes = minutesPerDay.reduce((a, b) => a + b, 0);
+  const totalMacros = macrosPerDay.reduce(
+    (m, d) => ({ protein: m.protein + d.protein, carbs: m.carbs + d.carbs, fat: m.fat + d.fat }),
+    { protein: 0, carbs: 0, fat: 0 }
+  );
   const weightChange = round1(weightOnDate(member, endISO) - weightOnDate(member, startISO));
   return {
     avgKcal: daysWithFood ? Math.round(totalKcal / daysWithFood) : 0,
     totalKcal,
-    avgSteps: dates.length ? Math.round(totalSteps / dates.length) : 0,
-    avgMinutes: dates.length ? Math.round(totalMinutes / dates.length) : 0,
+    avgSteps: daysWithSteps ? Math.round(totalSteps / daysWithSteps) : 0,
+    avgMinutes: daysWithMinutes ? Math.round(totalMinutes / daysWithMinutes) : 0,
+    avgMacros: daysWithFood
+      ? { protein: Math.round(totalMacros.protein / daysWithFood), carbs: Math.round(totalMacros.carbs / daysWithFood), fat: Math.round(totalMacros.fat / daysWithFood) }
+      : { protein: 0, carbs: 0, fat: 0 },
+    daysWithFood, daysWithSteps, daysWithMinutes, totalDays: dates.length,
     weightChange,
     dates, kcalPerDay, stepsPerDay, minutesPerDay,
   };
@@ -1901,12 +2030,16 @@ function Dashboard({ me, members, programs, goTo, onSelectDate }) {
 
 /* ================================= Today =================================== */
 
-function round1(n) { return Math.round(n * 2) / 2; }
+// Snaps a value to the nearest 0.5 — used only by NumberField's +/- steppers
+// so a half-step field (e.g. bodyweight, step=0.5) always lands on a clean
+// half-unit instead of accumulating floating-point drift. NOT for display
+// rounding — see round1 below for that.
+function roundHalf(n) { return Math.round(n * 2) / 2; }
 
 function NumberField({ value, onChange, step = 1, min = 0, width = "w-14", label = "value" }) {
   return (
     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-      <button type="button" aria-label={`Decrease ${label}`} onClick={() => onChange(Math.max(min, round1(value - step)))} className="w-6 h-6 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center shrink-0">
+      <button type="button" aria-label={`Decrease ${label}`} onClick={() => onChange(Math.max(min, roundHalf(value - step)))} className="w-6 h-6 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center shrink-0">
         <Minus size={12} />
       </button>
       <input
@@ -1914,7 +2047,7 @@ function NumberField({ value, onChange, step = 1, min = 0, width = "w-14", label
         onChange={(e) => onChange(Math.max(min, Number(e.target.value) || 0))}
         className={`${width} text-center bg-white/5 border border-white/10 rounded-lg py-1 text-sm text-white focus:outline-none focus:ring-1 focus:ring-pink-400/50`}
       />
-      <button type="button" aria-label={`Increase ${label}`} onClick={() => onChange(round1(value + step))} className="w-6 h-6 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center shrink-0">
+      <button type="button" aria-label={`Increase ${label}`} onClick={() => onChange(roundHalf(value + step))} className="w-6 h-6 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center shrink-0">
         <Plus size={12} />
       </button>
     </div>
@@ -3353,6 +3486,13 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove, onCopyProgr
         <StatBlock icon={<TrendingUp size={16} className="text-emerald-400" />} label="Personal records" value={member.prCount} />
       </div>
 
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatBlock icon={<Scale size={16} className="text-fuchsia-400" />} label="Current weight" value={`${currentWeightKg(member)}kg`} />
+        <StatBlock icon={<Flame size={16} className="text-orange-400" />} label="Today's calories" value={`${totalKcalForDay(member, todayISO())} kcal`} />
+        <StatBlock icon={<Target size={16} className="text-pink-400" />} label="Calorie target (est.)" value={`${calorieTargetFor(member)} kcal`} />
+        <StatBlock icon={<Footprints size={16} className="text-sky-400" />} label="Steps today" value={(activityForDay(member, todayISO()).steps || 0).toLocaleString()} />
+      </div>
+
       {program && (
         <Card
           className="p-5 cursor-pointer hover:bg-white/[0.07] transition-colors group"
@@ -3487,6 +3627,11 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove, onCopyProgr
           </ResponsiveContainer>
         )}
       </Card>
+
+      {/* Same "Trends & analytics" card the member sees on their own Diet tab —
+          reused as-is here so anyone in the crew can check in on someone else's
+          nutrition/weight/activity trends, not just their training. */}
+      <DietHistorySection me={member} />
 
       <Card className="p-5">
         <SectionHeading eyebrow="Badges" title="Achievements" />
@@ -4505,7 +4650,8 @@ function syncAllOwnedProgramsToLatestLog(programs, ownerId, exerciseId, hist) {
 // activityLevel, calorieTargetOverride) plus the shared customFoods map — no
 // parallel data store, per spec §20/§21.
 
-function DietDateNav({ iso, onChange }) {
+function DietDateNav({ iso, onChange, me }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
   const isToday = iso === todayISO();
   return (
     <div className="flex items-center justify-between gap-3">
@@ -4513,8 +4659,19 @@ function DietDateNav({ iso, onChange }) {
         <ChevronLeft size={18} />
       </button>
       <div className="text-center">
-        <div className="text-white font-bold text-base">{isToday ? "Today" : formatNiceDate(iso)}</div>
-        {!isToday && <button onClick={() => onChange(todayISO())} className="text-[11px] text-pink-300 hover:text-pink-200 mt-0.5">Jump to today</button>}
+        <button
+          onClick={() => setPickerOpen(true)}
+          aria-haspopup="dialog"
+          className="flex items-center gap-1.5 text-white font-bold text-base px-2.5 py-1 rounded-xl hover:bg-white/5 transition-colors mx-auto"
+        >
+          <Calendar size={14} className="text-slate-500" />
+          {isToday ? "Today" : formatNiceDate(iso)}
+        </button>
+        {!isToday && (
+          <button onClick={() => onChange(todayISO())} className="text-[11px] text-pink-300 hover:text-pink-200 mt-0.5 block mx-auto">
+            Jump to today
+          </button>
+        )}
       </div>
       <button
         onClick={() => onChange(addDaysISO(iso, 1))} aria-label="Next day" disabled={iso >= todayISO()}
@@ -4522,7 +4679,101 @@ function DietDateNav({ iso, onChange }) {
       >
         <ChevronRight size={18} />
       </button>
+
+      <DietDatePickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        iso={iso}
+        me={me}
+        onSelect={(d) => { onChange(d); setPickerOpen(false); }}
+      />
     </div>
+  );
+}
+
+// Full calendar month-grid for jumping straight to any date's diet log —
+// tapping "previous day" one at a time to get back to, say, last month is
+// too manual. Mirrors MonthCalendar's look/feel (spec-consistent design
+// tokens) but simpler: no workout-completion coloring, just a small dot
+// under days that already have something logged, the selected day
+// highlighted, and future days disabled (there's nothing to log yet).
+function DietDatePickerModal({ open, onClose, iso, me, onSelect }) {
+  const todayIso = todayISO();
+  const [cursor, setCursor] = useState(() => {
+    const t = isoToDate(iso || todayIso);
+    return { y: t.getFullYear(), m: t.getMonth() };
+  });
+
+  // Re-sync the visible month to whichever date is currently selected every
+  // time the picker (re)opens, so it never opens showing a stale month left
+  // over from the last time it was used.
+  useEffect(() => {
+    if (!open) return;
+    const t = isoToDate(iso || todayIso);
+    setCursor({ y: t.getFullYear(), m: t.getMonth() });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  if (!open) return null;
+
+  const monthLabel = new Date(cursor.y, cursor.m, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const daysInMonth = new Date(cursor.y, cursor.m + 1, 0).getDate();
+  const firstWeekday = (new Date(cursor.y, cursor.m, 1).getDay() + 6) % 7; // 0 = Monday
+
+  const cells = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const goPrev = () => setCursor((c) => { const d = new Date(c.y, c.m - 1, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+  const goNext = () => setCursor((c) => { const d = new Date(c.y, c.m + 1, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+
+  return (
+    <Modal open={open} onClose={onClose} title="Jump to date">
+      <div className="flex items-center justify-between mb-4">
+        <button onClick={goPrev} aria-label="Previous month" className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center">
+          <ChevronLeft size={15} />
+        </button>
+        <span className="text-sm font-semibold text-white">{monthLabel}</span>
+        <button onClick={goNext} aria-label="Next month" className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center">
+          <ChevronRight size={15} />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-7 gap-1.5 text-center text-[10px] text-slate-500 mb-1.5">
+        {DAY_ORDER.map((d) => <span key={d}>{DAY_SHORT[d]}</span>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1.5">
+        {cells.map((d, i) => {
+          if (!d) return <div key={`b${i}`} />;
+          const cellIso = isoFromYMD(cursor.y, cursor.m, d);
+          const isFuture = cellIso > todayIso;
+          const isSelected = cellIso === iso;
+          const isToday = cellIso === todayIso;
+          const hasLog = (me?.foodLog?.[cellIso]?.length || 0) > 0;
+          return (
+            <button
+              key={cellIso}
+              onClick={() => onSelect(cellIso)}
+              disabled={isFuture}
+              aria-label={formatNiceDate(cellIso)}
+              className={`relative aspect-square rounded-xl border text-xs font-semibold flex items-center justify-center transition-transform hover:scale-105 disabled:opacity-30 disabled:pointer-events-none disabled:hover:scale-100 ${
+                isSelected ? `${GRAD} text-white border-transparent` : "bg-white/[0.03] text-slate-300 border-white/5"
+              } ${isToday && !isSelected ? "ring-2 ring-white/30" : ""}`}
+            >
+              {d}
+              {hasLog && !isSelected && <span className="absolute bottom-1 w-1 h-1 rounded-full bg-pink-400" />}
+            </button>
+          );
+        })}
+      </div>
+
+      <button
+        onClick={() => onSelect(todayIso)}
+        className="w-full text-xs font-semibold text-center text-pink-300 hover:text-pink-200 py-2 mt-3 rounded-lg hover:bg-white/5 transition-colors"
+      >
+        Jump to today
+      </button>
+    </Modal>
   );
 }
 
@@ -4537,6 +4788,25 @@ function SourceBadge({ source }) {
   return <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border shrink-0 ${m.cls}`}>{m.label}</span>;
 }
 
+// One slim macro progress bar (consumed vs suggested target). Overshooting
+// doesn't turn red the way overshooting calories does — going over a single
+// macro (protein especially) isn't the problem overshooting total calories
+// is, so this only communicates progress, never "you did something wrong".
+function MacroBar({ label, grams, targetGrams, color }) {
+  const pct = targetGrams > 0 ? clamp((grams / targetGrams) * 100, 0, 100) : 0;
+  return (
+    <div className="flex-1 min-w-[90px]">
+      <div className="flex items-baseline justify-between mb-1">
+        <span className="text-[11px] font-semibold text-slate-400">{label}</span>
+        <span className="text-[11px] text-slate-500">{grams}<span className="text-slate-600">/{targetGrams}g</span></span>
+      </div>
+      <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: color }} />
+      </div>
+    </div>
+  );
+}
+
 function DailySummaryCard({ me, iso, entries, target }) {
   const consumed = entries.reduce((s, e) => s + (e.kcal || 0), 0);
   const remaining = target - consumed;
@@ -4545,6 +4815,13 @@ function DailySummaryCard({ me, iso, entries, target }) {
   const weight = weightOnDate(me, iso);
   const activityKcal = estimatedActivityKcal(me, iso);
   const pct = target > 0 ? clamp((consumed / target) * 100, 0, 100) : 0;
+  const macros = macrosForDay(me, iso);
+  const macroTargets = macroTargetsFor(me);
+  // Macro grams are only known for database-sourced entries (estimate/manual
+  // entries store kcal only) — show the breakdown once there's at least one
+  // entry with real macro data, rather than confidently displaying "0g" when
+  // it's actually "unknown".
+  const hasMacroData = entries.some((e) => e.protein != null || e.carbs != null || e.fat != null);
 
   return (
     <Card className="p-5 md:p-6">
@@ -4571,6 +4848,17 @@ function DailySummaryCard({ me, iso, entries, target }) {
           <StatBlock icon={<Scale size={16} className="text-fuchsia-400" />} label="Weight" value={`${weight}kg`} />
         </div>
       </div>
+      {hasMacroData ? (
+        <div className="flex gap-4 flex-wrap mt-5 pt-5 border-t border-white/5">
+          <MacroBar label="Protein" grams={Math.round(macros.protein)} targetGrams={macroTargets.proteinG} color="#f472b6" />
+          <MacroBar label="Carbs" grams={Math.round(macros.carbs)} targetGrams={macroTargets.carbsG} color="#38bdf8" />
+          <MacroBar label="Fat" grams={Math.round(macros.fat)} targetGrams={macroTargets.fatG} color="#fbbf24" />
+        </div>
+      ) : entries.length > 0 ? (
+        <p className="text-[11px] text-slate-500 mt-4 flex items-center gap-1.5">
+          <Info size={11} className="shrink-0" /> No protein/carb/fat data yet — log a food from the database (not an estimate or manual entry) to see a macro breakdown.
+        </p>
+      ) : null}
       {activityKcal > 0 && (
         <p className="text-[11px] text-slate-500 mt-4 flex items-center gap-1.5">
           <Info size={11} className="shrink-0" /> ~{activityKcal} kcal estimated burned from today's steps/workout — not subtracted from your target above.
@@ -4628,7 +4916,11 @@ function FoodEntryRow({ entry, food, onUpdate, onDelete }) {
           <SourceBadge source={entry.source} />
         </div>
         {!editing ? (
-          <div className="text-[11px] text-slate-500 mt-0.5">{entry.amount} {entry.unit} · ≈{entry.kcal} kcal{entry.note ? ` · ${entry.note}` : ""}</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">
+            {entry.amount} {entry.unit} · ≈{entry.kcal} kcal
+            {entry.protein != null && <span> · P{entry.protein} C{entry.carbs} F{entry.fat}</span>}
+            {entry.note ? ` · ${entry.note}` : ""}
+          </div>
         ) : (
           <div className="flex items-center gap-2 mt-1.5 flex-wrap">
             {canRecalc ? (
@@ -4664,7 +4956,7 @@ function FoodEntryRow({ entry, food, onUpdate, onDelete }) {
   );
 }
 
-function MealSection({ meal, entries, customFoods, onUpdate, onDelete, onAddToMeal }) {
+function MealSection({ meal, entries, customFoods, onUpdate, onDelete, onAddToMeal, isCustom, onDeleteMealType }) {
   const total = entries.reduce((s, e) => s + (e.kcal || 0), 0);
   return (
     <div>
@@ -4674,9 +4966,21 @@ function MealSection({ meal, entries, customFoods, onUpdate, onDelete, onAddToMe
           <span className="text-sm font-bold text-white">{meal.label}</span>
           {entries.length > 0 && <span className="text-[11px] text-slate-500">· {total} kcal</span>}
         </div>
-        <button onClick={() => onAddToMeal(meal.id)} className="flex items-center gap-1 text-[11px] font-semibold text-pink-300 hover:text-pink-200">
-          <Plus size={12} /> Add
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={() => onAddToMeal(meal.id)} className="flex items-center gap-1 text-[11px] font-semibold text-pink-300 hover:text-pink-200">
+            <Plus size={12} /> Add
+          </button>
+          {isCustom && (
+            <button
+              onClick={() => onDeleteMealType(meal.id)}
+              aria-label={`Remove ${meal.label} meal`}
+              title="Remove this meal"
+              className="text-slate-600 hover:text-rose-400 transition-colors"
+            >
+              <Trash2 size={12} />
+            </button>
+          )}
+        </div>
       </div>
       {entries.length === 0 ? (
         <p className="text-xs text-slate-600 pl-6 pb-1">Nothing logged yet.</p>
@@ -4704,8 +5008,11 @@ function CustomFoodForm({ onCreate, onCancel }) {
   const [carbs, setCarbs] = useState(0);
   const [fat, setFat] = useState(0);
 
+  // kcal is intentionally allowed to be 0 here (water, black coffee, diet
+  // soda, spices…) — only a missing name blocks saving. NumberField already
+  // guarantees kcal/protein/carbs/fat are valid non-negative numbers.
   const submit = () => {
-    if (!name.trim() || !kcal) return;
+    if (!name.trim()) return;
     onCreate({ name, category, baseUnit, baseAmount, kcal, protein, carbs, fat });
   };
 
@@ -4733,13 +5040,14 @@ function CustomFoodForm({ onCreate, onCancel }) {
       </div>
       <div className="flex gap-2 justify-end">
         <GhostButton onClick={onCancel}>Cancel</GhostButton>
-        <GradientButton onClick={submit} disabled={!name.trim() || !kcal}><Check size={14} /> Create</GradientButton>
+        <GradientButton onClick={submit} disabled={!name.trim()}><Check size={14} /> Create</GradientButton>
       </div>
     </div>
   );
 }
 
-function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defaultMeal, initialTab }) {
+function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defaultMeal, initialTab, mealTypes }) {
+  const meals = mealTypes || MEAL_TYPES;
   const [tab, setTab] = useState("search");
   const [meal, setMeal] = useState(defaultMeal);
   const [q, setQ] = useState("");
@@ -4771,7 +5079,7 @@ function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defa
     const matchesCat = category === "All" ? true : category === "Custom" ? !!f.custom : f.category === category;
     return matchesCat && f.name.toLowerCase().includes(q.toLowerCase());
   });
-  const mealLabel = MEAL_TYPES.find((m) => m.id === meal)?.label;
+  const mealLabel = meals.find((m) => m.id === meal)?.label;
 
   const pick = (f) => { setPicked(f); setUnit(f.baseUnit); setAmount(f.baseAmount); };
   const preview = picked ? computeFoodStats(picked, amount, unit) : null;
@@ -4782,14 +5090,16 @@ function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defa
     onAdd({ meal, source: "database", foodId: picked.id, name: picked.name, amount, unit, ...stats });
     setPicked(null);
   };
+  // restKcal/manualKcal of 0 is valid (e.g. black coffee, diet soda, water) —
+  // only a missing name blocks submission.
   const submitEstimate = () => {
     const name = restPicked ? restPicked.name : restName.trim();
-    if (!name || !restKcal) return;
+    if (!name) return;
     onAdd({ meal, source: "estimate", name, amount: 1, unit: "serving", kcal: Math.round(Number(restKcal) || 0) });
     setRestPicked(null); setRestName(""); setRestKcal(500);
   };
   const submitManual = () => {
-    if (!manualName.trim() || !manualKcal) return;
+    if (!manualName.trim()) return;
     onAdd({ meal, source: "manual", name: manualName.trim(), amount: 1, unit: "serving", kcal: Math.round(Number(manualKcal) || 0) });
     setManualName(""); setManualKcal(0);
   };
@@ -4805,7 +5115,7 @@ function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defa
       <div className="flex flex-col gap-1.5 mb-3">
         <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Meal</label>
         <div className="flex gap-1.5 flex-wrap">
-          {MEAL_TYPES.map((m) => <Chip key={m.id} active={meal === m.id} onClick={() => setMeal(m.id)}>{m.icon} {m.label}</Chip>)}
+          {meals.map((m) => <Chip key={m.id} active={meal === m.id} onClick={() => setMeal(m.id)}>{m.icon} {m.label}</Chip>)}
         </div>
       </div>
 
@@ -4867,9 +5177,16 @@ function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defa
                 {foodUnitChoices(picked).map((u) => <Chip key={u} active={unit === u} onClick={() => setUnit(u)} className="!px-3 !py-1.5 text-xs">{u}</Chip>)}
               </div>
             </div>
-            <Card className="p-4 flex items-center justify-between">
-              <span className="text-sm text-slate-400">Estimated calories</span>
-              <span className="text-2xl font-black text-white">≈{preview.kcal} kcal</span>
+            <Card className="p-4 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-slate-400">Estimated calories</span>
+                <span className="text-2xl font-black text-white">≈{preview.kcal} kcal</span>
+              </div>
+              <div className="flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-white/5">
+                <span>Protein {preview.protein}g</span>
+                <span>Carbs {preview.carbs}g</span>
+                <span>Fat {preview.fat}g</span>
+              </div>
             </Card>
             <GradientButton size="lg" onClick={submitDatabase}><Plus size={16} /> Add to {mealLabel}</GradientButton>
           </div>
@@ -4904,6 +5221,9 @@ function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defa
             <SourceBadge source="estimate" />
           </div>
           <GradientButton size="lg" onClick={submitEstimate} disabled={!(restPicked || restName.trim())}><Plus size={16} /> Add estimate to {mealLabel}</GradientButton>
+          {(restPicked || restName.trim()) && !restKcal ? (
+            <p className="text-[11px] text-slate-500 -mt-2">Logging as 0 kcal. Adjust above if that's not right.</p>
+          ) : null}
         </div>
       )}
 
@@ -4919,7 +5239,10 @@ function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defa
             <NumberField value={manualKcal} onChange={setManualKcal} step={10} min={0} width="w-20" label="calories" />
             <SourceBadge source="manual" />
           </div>
-          <GradientButton size="lg" onClick={submitManual} disabled={!manualName.trim() || !manualKcal}><Plus size={16} /> Add to {mealLabel}</GradientButton>
+          <GradientButton size="lg" onClick={submitManual} disabled={!manualName.trim()}><Plus size={16} /> Add to {mealLabel}</GradientButton>
+          {manualName.trim() && !manualKcal ? (
+            <p className="text-[11px] text-slate-500 -mt-2">Logging as 0 kcal. Adjust above if that's not right.</p>
+          ) : null}
         </div>
       )}
     </Modal>
@@ -4969,8 +5292,87 @@ function AddActivityModal({ open, onClose, onSubmit, iso, initial }) {
   );
 }
 
+// Lets a member add their own meal slot beyond the fixed breakfast/lunch/
+// dinner/snack four — for anyone eating 5-6x a day (pre-workout, second
+// breakfast, late-night snack, whatever fits). Just a name + icon; the new
+// slot then behaves exactly like the built-in ones.
+function AddMealTypeModal({ open, onClose, onCreate }) {
+  const [label, setLabel] = useState("");
+  const [icon, setIcon] = useState(MEAL_ICON_CHOICES[0]);
+
+  useEffect(() => {
+    if (!open) return;
+    setLabel("");
+    setIcon(MEAL_ICON_CHOICES[0]);
+  }, [open]);
+
+  if (!open) return null;
+
+  const canSubmit = !!label.trim();
+  const submit = () => {
+    if (!canSubmit) return;
+    onCreate({ label, icon });
+    onClose();
+  };
+
+  return (
+    <Modal
+      open={open} onClose={onClose} title="Add a meal"
+      footer={
+        <>
+          <GhostButton onClick={onClose}>Cancel</GhostButton>
+          <GradientButton onClick={submit} disabled={!canSubmit}><Check size={14} /> Add meal</GradientButton>
+        </>
+      }
+    >
+      <p className="text-xs text-slate-500 mb-4">
+        Not everyone eats on the standard four-meal schedule — add a slot for pre-workout, second breakfast, late-night snack, or anything else that fits your day.
+      </p>
+      <div className="flex flex-col gap-3">
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Name</label>
+          <input
+            autoFocus value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Pre-workout"
+            onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+            className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50"
+          />
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Icon</label>
+          <div className="flex gap-1.5 flex-wrap">
+            {MEAL_ICON_CHOICES.map((ic) => (
+              <button
+                key={ic} onClick={() => setIcon(ic)} aria-label={`Choose icon ${ic}`}
+                className={`w-9 h-9 rounded-xl text-base flex items-center justify-center border transition-colors ${
+                  icon === ic ? `${GRAD} border-transparent` : "bg-white/5 border-white/10 hover:bg-white/10"
+                }`}
+              >
+                {ic}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function BodySettingsCard({ me, onUpdate }) {
   const [overrideDraft, setOverrideDraft] = useState(me.calorieTargetOverride ?? "");
+  // Sync the draft if the override changes from elsewhere (e.g. cleared via
+  // the "Clear" button on another device) so this field never goes stale.
+  useEffect(() => { setOverrideDraft(me.calorieTargetOverride ?? ""); }, [me.calorieTargetOverride]);
+  // Unlike every other numeric input on this page, the override is a plain
+  // <input type="number"> rather than a clamped NumberField, so it's the one
+  // place a stray "-" or a huge/garbage value could otherwise slip through
+  // and turn every calorie number on this page into NaN or nonsense. Applying
+  // clamps it to a realistic human daily-calorie range instead.
+  const applyOverride = () => {
+    if (overrideDraft === "") { onUpdate({ calorieTargetOverride: null }); return; }
+    const n = Number(overrideDraft);
+    if (!Number.isFinite(n)) { setOverrideDraft(me.calorieTargetOverride ?? ""); return; }
+    onUpdate({ calorieTargetOverride: clamp(Math.round(n), 800, 8000) });
+  };
   const weight = currentWeightKg(me);
   const bmr = calcBMR({ sex: me.sex || DEFAULT_SEX, weightKg: weight, heightCm: me.heightCm ?? DEFAULT_HEIGHT_CM, age: me.age ?? DEFAULT_AGE });
   const tdee = calcTDEE(bmr, me.activityLevel || DEFAULT_ACTIVITY_LEVEL);
@@ -5027,10 +5429,10 @@ function BodySettingsCard({ me, onUpdate }) {
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-xs text-slate-400">Manual override</span>
         <input
-          type="number" value={overrideDraft} onChange={(e) => setOverrideDraft(e.target.value)} placeholder="e.g. 2000"
+          type="number" min="800" max="8000" value={overrideDraft} onChange={(e) => setOverrideDraft(e.target.value)} placeholder="e.g. 2000"
           className="w-24 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm text-center focus:outline-none focus:ring-1 focus:ring-pink-400/50"
         />
-        <GhostButton onClick={() => onUpdate({ calorieTargetOverride: overrideDraft === "" ? null : Number(overrideDraft) })} className="!px-3 !py-1.5 text-xs">Apply</GhostButton>
+        <GhostButton onClick={applyOverride} className="!px-3 !py-1.5 text-xs">Apply</GhostButton>
         {me.calorieTargetOverride != null && (
           <GhostButton onClick={() => { setOverrideDraft(""); onUpdate({ calorieTargetOverride: null }); }} className="!px-3 !py-1.5 text-xs">Clear</GhostButton>
         )}
@@ -5084,6 +5486,7 @@ function DietBarChart({ data, valueKey, labelKey }) {
 }
 
 function DietHistorySection({ me }) {
+  const macroTargets = macroTargetsFor(me);
   const [range, setRange] = useState("week");
   const days = range === "week" ? 7 : 30;
   const endISO = todayISO();
@@ -5109,15 +5512,22 @@ function DietHistorySection({ me }) {
         }
       />
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-6">
-        <StatBlock icon={<Flame size={16} className="text-orange-400" />} label="Avg calories" value={`${stats.avgKcal}`} />
-        <StatBlock icon={<Footprints size={16} className="text-sky-400" />} label="Avg steps" value={stats.avgSteps.toLocaleString()} />
-        <StatBlock icon={<Dumbbell size={16} className="text-amber-400" />} label="Avg workout" value={`${stats.avgMinutes} min`} />
+        <StatBlock icon={<Flame size={16} className="text-orange-400" />} label={`Avg calories (${stats.daysWithFood}/${stats.totalDays}d logged)`} value={`${stats.avgKcal}`} />
+        <StatBlock icon={<Footprints size={16} className="text-sky-400" />} label={`Avg steps (${stats.daysWithSteps}/${stats.totalDays}d logged)`} value={stats.avgSteps.toLocaleString()} />
+        <StatBlock icon={<Dumbbell size={16} className="text-amber-400" />} label={`Avg workout (${stats.daysWithMinutes}/${stats.totalDays}d logged)`} value={`${stats.avgMinutes} min`} />
         <StatBlock
           icon={<Scale size={16} className="text-fuchsia-400" />} label="Weight change"
           value={`${stats.weightChange > 0 ? "+" : ""}${stats.weightChange}kg`}
           accent={stats.weightChange < 0 ? "text-emerald-300" : stats.weightChange > 0 ? "text-amber-300" : "text-white"}
         />
       </div>
+      {stats.daysWithFood > 0 && (
+        <div className="flex gap-4 flex-wrap mb-6">
+          <MacroBar label="Avg protein" grams={stats.avgMacros.protein} targetGrams={macroTargets.proteinG} color="#f472b6" />
+          <MacroBar label="Avg carbs" grams={stats.avgMacros.carbs} targetGrams={macroTargets.carbsG} color="#38bdf8" />
+          <MacroBar label="Avg fat" grams={stats.avgMacros.fat} targetGrams={macroTargets.fatG} color="#fbbf24" />
+        </div>
+      )}
       <div className="flex flex-col gap-6">
         <div>
           <p className="text-xs font-semibold text-slate-400 mb-2">Calorie intake</p>
@@ -5142,16 +5552,21 @@ function DietHistorySection({ me }) {
   );
 }
 
-function DietPage({ me, customFoods, onAddFood, onUpdateFood, onDeleteFood, onAddCustomFood, onLogWeight, onUpdateActivity, onUpdateBodySettings }) {
+function DietPage({ me, customFoods, onAddFood, onUpdateFood, onDeleteFood, onAddCustomFood, onLogWeight, onUpdateActivity, onUpdateBodySettings, onAddMealType, onDeleteMealType }) {
   const [iso, setIso] = useState(todayISO());
   const [foodModal, setFoodModal] = useState(null); // { defaultMeal, initialTab } | null
   const [weightModalOpen, setWeightModalOpen] = useState(false);
   const [activityModalOpen, setActivityModalOpen] = useState(false);
+  const [addMealOpen, setAddMealOpen] = useState(false);
 
   const entries = foodEntriesForDay(me, iso);
   const target = calorieTargetFor(me);
   const activity = activityForDay(me, iso);
   const entriesByMeal = (mealId) => entries.filter((e) => e.meal === mealId);
+  // Fixed four + whatever custom slots this member has added (someone eating
+  // 5-6x a day isn't stuck with just breakfast/lunch/dinner/snack).
+  const mealTypes = useMemo(() => mealTypesFor(me), [me.customMealTypes]);
+  const fixedMealIds = useMemo(() => new Set(MEAL_TYPES.map((m) => m.id)), []);
 
   return (
     <div className="flex flex-col gap-6">
@@ -5160,7 +5575,7 @@ function DietPage({ me, customFoods, onAddFood, onUpdateFood, onDeleteFood, onAd
         <h1 className="text-2xl md:text-3xl font-black text-white">Nutrition & activity</h1>
       </div>
 
-      <DietDateNav iso={iso} onChange={setIso} />
+      <DietDateNav iso={iso} onChange={setIso} me={me} />
       <DailySummaryCard me={me} iso={iso} entries={entries} target={target} />
       <DietQuickActions
         onAddFood={() => setFoodModal({ defaultMeal: defaultMealForNow() })}
@@ -5170,14 +5585,22 @@ function DietPage({ me, customFoods, onAddFood, onUpdateFood, onDeleteFood, onAd
       />
 
       <div className="flex flex-col gap-5">
-        {MEAL_TYPES.map((m) => (
+        {mealTypes.map((m) => (
           <MealSection
             key={m.id} meal={m} entries={entriesByMeal(m.id)} customFoods={customFoods}
             onUpdate={(id, patch) => onUpdateFood(iso, id, patch)}
             onDelete={(id) => onDeleteFood(iso, id)}
             onAddToMeal={(mealId) => setFoodModal({ defaultMeal: mealId })}
+            isCustom={!fixedMealIds.has(m.id)}
+            onDeleteMealType={onDeleteMealType}
           />
         ))}
+        <button
+          onClick={() => setAddMealOpen(true)}
+          className="w-full flex items-center justify-center gap-2 p-2.5 rounded-xl border border-dashed border-white/15 text-sm text-slate-400 hover:bg-white/5 hover:border-white/25 hover:text-slate-300 transition-colors"
+        >
+          <Plus size={15} className="text-pink-400" /> Add a meal
+        </button>
       </div>
 
       <BodySettingsCard me={me} onUpdate={onUpdateBodySettings} />
@@ -5188,11 +5611,13 @@ function DietPage({ me, customFoods, onAddFood, onUpdateFood, onDeleteFood, onAd
         onAdd={(payload) => onAddFood(iso, payload)}
         onAddCustomFood={onAddCustomFood}
         customFoods={customFoods}
+        mealTypes={mealTypes}
         defaultMeal={foodModal?.defaultMeal || defaultMealForNow()}
         initialTab={foodModal?.initialTab}
       />
       <AddWeightModal open={weightModalOpen} onClose={() => setWeightModalOpen(false)} onSubmit={(kg) => onLogWeight(iso, kg)} iso={iso} currentKg={weightOnDate(me, iso)} />
       <AddActivityModal open={activityModalOpen} onClose={() => setActivityModalOpen(false)} onSubmit={(patch) => onUpdateActivity(iso, patch)} iso={iso} initial={activity} />
+      <AddMealTypeModal open={addMealOpen} onClose={() => setAddMealOpen(false)} onCreate={onAddMealType} />
     </div>
   );
 }
@@ -5730,6 +6155,30 @@ export default function App() {
     return food.id;
   };
 
+  // ---- Diet: custom meal slots are per-member (unlike customFoods, which are
+  // crew-wide) since everyone's meal structure differs — one person's 6-meal
+  // bodybuilding split isn't another's. Deleting one is blocked if it still has
+  // logged entries anywhere in that member's history, so a food entry can never
+  // end up pointing at a meal slot that no longer exists. ----
+  const handleAddMealType = (payload) => {
+    const m = state.members[session.userId];
+    const mealType = newMealType(payload);
+    const next = { ...m, customMealTypes: [...(m.customMealTypes || []), mealType] };
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    showToast(`"${mealType.label}" added`, "🆕");
+  };
+  const handleDeleteMealType = (id) => {
+    const m = state.members[session.userId];
+    const inUse = Object.values(m.foodLog || {}).some((dayList) => dayList.some((e) => e.meal === id));
+    if (inUse) {
+      showToast("This meal has logged entries — clear them first", "⚠️");
+      return;
+    }
+    const next = { ...m, customMealTypes: (m.customMealTypes || []).filter((mt) => mt.id !== id) };
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    showToast("Meal removed", "🗑️");
+  };
+
   // ---- Diet: steps / logged workout minutes for a date. Workout *completion*
   // itself always comes from the existing worklogs — this only stores the two
   // extra numbers Diet needs that nothing else already tracks. ----
@@ -5812,6 +6261,7 @@ export default function App() {
             onAddCustomFood={handleAddCustomFood}
             onLogWeight={handleLogWeight} onUpdateActivity={handleUpdateActivity}
             onUpdateBodySettings={handleUpdateProfile}
+            onAddMealType={handleAddMealType} onDeleteMealType={handleDeleteMealType}
           />
         );
         break;
