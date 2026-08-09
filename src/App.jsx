@@ -923,6 +923,7 @@ export function newMember({ id, name, role, status, avatarUrl }) {
     activityLevel: DEFAULT_ACTIVITY_LEVEL,
     weightHistory: [],        // [{date, kg}] — bodyweightKg above always mirrors the latest entry
     calorieTargetOverride: null,
+    proteinTargetOverride: null,
     foodLog: {},              // { [iso]: [ {id, meal, source, foodId, name, amount, unit, kcal, protein, carbs, fat, note} ] }
     activityLog: {},          // { [iso]: { steps, workoutMinutes } } — workout *completion* itself still comes from worklogs
     customMealTypes: [],      // [ {id, label, icon} ] — meal slots this member added beyond breakfast/lunch/dinner/snack
@@ -1029,6 +1030,7 @@ function normalizeState(s) {
     Object.entries(s.members || {}).map(([id, m]) => [id, {
       bodyweightKg: DEFAULT_BODYWEIGHT_KG, heightCm: DEFAULT_HEIGHT_CM, age: DEFAULT_AGE, avatarUrl: null,
       sex: DEFAULT_SEX, activityLevel: DEFAULT_ACTIVITY_LEVEL, weightHistory: [], calorieTargetOverride: null,
+      proteinTargetOverride: null,
       foodLog: {}, activityLog: {}, customMealTypes: [],
       ...m,
     }])
@@ -1169,14 +1171,19 @@ function calorieTargetFor(member) {
 // target, so it stays in sync with weight/activity/override automatically
 // like everything else in this file. Protein is anchored to bodyweight (a
 // widely-used strength/physique coaching guideline — see calcBMR's comment
-// for the same "estimate, not a lab measurement" caveat), fat gets a fixed
-// share of total calories, and carbs take the remainder. This is the same
-// three-step approach most calorie-tracking apps use once total calories are
-// already known — nothing here is stored on the member record.
+// for the same "estimate, not a lab measurement" caveat) unless the member
+// has set a manual proteinTargetOverride (spec-alike to calorieTargetOverride
+// — see calorieTargetFor above), in which case that always wins. Fat gets a
+// fixed share of total calories, and carbs take the remainder. This is the
+// same three-step approach most calorie-tracking apps use once total
+// calories (and protein) are already known — nothing here is stored on the
+// member record except the optional override itself.
 function macroTargetsFor(member) {
   const kcalTarget = calorieTargetFor(member);
   const weightKg = currentWeightKg(member);
-  const proteinG = Math.round((Number(weightKg) || DEFAULT_BODYWEIGHT_KG) * 1.8);
+  const proteinG = member?.proteinTargetOverride != null
+    ? Math.round(member.proteinTargetOverride)
+    : Math.round((Number(weightKg) || DEFAULT_BODYWEIGHT_KG) * 1.8);
   const proteinKcal = proteinG * 4;
   const fatKcal = kcalTarget * 0.25;
   const fatG = Math.round(fatKcal / 9);
@@ -1329,10 +1336,12 @@ function dietStatsForRange(member, startISO, endISO) {
   const totalKcal = kcalPerDay.reduce((a, b) => a + b, 0);
   const totalSteps = stepsPerDay.reduce((a, b) => a + b, 0);
   const totalMinutes = minutesPerDay.reduce((a, b) => a + b, 0);
+  const proteinPerDay = macrosPerDay.map((d) => round1(d.protein));
   const totalMacros = macrosPerDay.reduce(
     (m, d) => ({ protein: m.protein + d.protein, carbs: m.carbs + d.carbs, fat: m.fat + d.fat }),
     { protein: 0, carbs: 0, fat: 0 }
   );
+  const daysWithProtein = proteinPerDay.filter((p) => p > 0).length;
   const weightChange = round1(weightOnDate(member, endISO) - weightOnDate(member, startISO));
   return {
     avgKcal: daysWithFood ? Math.round(totalKcal / daysWithFood) : 0,
@@ -1342,9 +1351,9 @@ function dietStatsForRange(member, startISO, endISO) {
     avgMacros: daysWithFood
       ? { protein: Math.round(totalMacros.protein / daysWithFood), carbs: Math.round(totalMacros.carbs / daysWithFood), fat: Math.round(totalMacros.fat / daysWithFood) }
       : { protein: 0, carbs: 0, fat: 0 },
-    daysWithFood, daysWithSteps, daysWithMinutes, totalDays: dates.length,
+    daysWithFood, daysWithSteps, daysWithMinutes, daysWithProtein, totalDays: dates.length,
     weightChange,
-    dates, kcalPerDay, stepsPerDay, minutesPerDay,
+    dates, kcalPerDay, stepsPerDay, minutesPerDay, proteinPerDay,
   };
 }
 
@@ -4817,10 +4826,11 @@ function DailySummaryCard({ me, iso, entries, target }) {
   const pct = target > 0 ? clamp((consumed / target) * 100, 0, 100) : 0;
   const macros = macrosForDay(me, iso);
   const macroTargets = macroTargetsFor(me);
-  // Macro grams are only known for database-sourced entries (estimate/manual
-  // entries store kcal only) — show the breakdown once there's at least one
-  // entry with real macro data, rather than confidently displaying "0g" when
-  // it's actually "unknown".
+  // Macro grams are known for database-sourced entries automatically, and
+  // optionally for estimate/manual entries when a protein amount was entered
+  // for them — show the breakdown once there's at least one entry with real
+  // macro data, rather than confidently displaying "0g" when it's actually
+  // "unknown".
   const hasMacroData = entries.some((e) => e.protein != null || e.carbs != null || e.fat != null);
 
   return (
@@ -4843,6 +4853,7 @@ function DailySummaryCard({ me, iso, entries, target }) {
             icon={<Activity size={16} className="text-emerald-400" />} label={remaining >= 0 ? "Remaining" : "Over target"}
             value={`${Math.abs(remaining)}`} accent={remaining < 0 ? "text-rose-300" : "text-white"}
           />
+          <StatBlock icon={<Zap size={16} className="text-pink-400" />} label="Protein today" value={`${Math.round(macros.protein)}g`} accent={macros.protein >= macroTargets.proteinG ? "text-emerald-300" : "text-white"} />
           <StatBlock icon={<Footprints size={16} className="text-sky-400" />} label="Steps" value={(activity.steps || 0).toLocaleString()} />
           <StatBlock icon={<Dumbbell size={16} className="text-amber-400" />} label="Workout" value={workout.completed ? (workout.minutes ? `${workout.minutes} min` : "Done ✓") : "—"} />
           <StatBlock icon={<Scale size={16} className="text-fuchsia-400" />} label="Weight" value={`${weight}kg`} />
@@ -4856,7 +4867,7 @@ function DailySummaryCard({ me, iso, entries, target }) {
         </div>
       ) : entries.length > 0 ? (
         <p className="text-[11px] text-slate-500 mt-4 flex items-center gap-1.5">
-          <Info size={11} className="shrink-0" /> No protein/carb/fat data yet — log a food from the database (not an estimate or manual entry) to see a macro breakdown.
+          <Info size={11} className="shrink-0" /> No protein/carb/fat data yet — log a food from the database, or add an estimated protein amount to an estimate/manual entry, to see a macro breakdown.
         </p>
       ) : null}
       {activityKcal > 0 && (
@@ -4894,15 +4905,26 @@ function FoodEntryRow({ entry, food, onUpdate, onDelete }) {
   const [editing, setEditing] = useState(false);
   const [amount, setAmount] = useState(entry.amount);
   const [kcalDraft, setKcalDraft] = useState(entry.kcal);
+  // For a database entry this mirrors entry.protein exactly (read-only —
+  // recalculated from the food + amount on save). For estimate/manual
+  // entries it's the editable "estimated protein" grams for this entry.
+  const [proteinDraft, setProteinDraft] = useState(entry.protein ?? 0);
   const canRecalc = entry.source === "database" && !!food;
 
-  const startEdit = () => { setAmount(entry.amount); setKcalDraft(entry.kcal); setEditing(true); };
+  const startEdit = () => { setAmount(entry.amount); setKcalDraft(entry.kcal); setProteinDraft(entry.protein ?? 0); setEditing(true); };
   const save = () => {
     if (canRecalc) {
       const stats = computeFoodStats(food, amount, entry.unit);
       onUpdate({ amount, ...stats });
     } else {
-      onUpdate({ kcal: Math.round(Number(kcalDraft) || 0), source: entry.source === "database" ? "manual" : entry.source });
+      // A protein amount left at 0 is treated as "not specified" rather than
+      // "this food truly has 0g protein", same reasoning as the kcal=0 case
+      // below — only an intentionally-entered positive value counts as data.
+      onUpdate({
+        kcal: Math.round(Number(kcalDraft) || 0),
+        protein: Number(proteinDraft) > 0 ? round1(Number(proteinDraft)) : null,
+        source: entry.source === "database" ? "manual" : entry.source,
+      });
     }
     setEditing(false);
   };
@@ -4918,7 +4940,13 @@ function FoodEntryRow({ entry, food, onUpdate, onDelete }) {
         {!editing ? (
           <div className="text-[11px] text-slate-500 mt-0.5">
             {entry.amount} {entry.unit} · ≈{entry.kcal} kcal
-            {entry.protein != null && <span> · P{entry.protein} C{entry.carbs} F{entry.fat}</span>}
+            {/* Each macro shown independently — a manual/estimate entry may
+                have a known protein amount with carbs/fat still unknown, so
+                assuming all three are present together would print "Cnull
+                Fnull" for those entries. */}
+            {entry.protein != null && <span className="text-pink-300/90"> · P{entry.protein}g</span>}
+            {entry.carbs != null && <span> C{entry.carbs}g</span>}
+            {entry.fat != null && <span> F{entry.fat}g</span>}
             {entry.note ? ` · ${entry.note}` : ""}
           </div>
         ) : (
@@ -4927,12 +4955,14 @@ function FoodEntryRow({ entry, food, onUpdate, onDelete }) {
               <>
                 <NumberField value={amount} onChange={setAmount} step={food.baseUnit === "g" || food.baseUnit === "ml" ? 10 : 1} min={0} width="w-16" label={`${entry.name} amount`} />
                 <span className="text-xs text-slate-400">{entry.unit}</span>
-                <span className="text-xs text-slate-400">≈ {computeFoodStats(food, amount, entry.unit).kcal} kcal</span>
+                <span className="text-xs text-slate-400">≈ {computeFoodStats(food, amount, entry.unit).kcal} kcal, {computeFoodStats(food, amount, entry.unit).protein}g protein</span>
               </>
             ) : (
               <>
                 <NumberField value={kcalDraft} onChange={setKcalDraft} step={10} min={0} width="w-16" label={`${entry.name} calories`} />
-                <span className="text-xs text-slate-400">kcal (manual)</span>
+                <span className="text-xs text-slate-400">kcal</span>
+                <NumberField value={proteinDraft} onChange={setProteinDraft} step={1} min={0} width="w-16" label={`${entry.name} protein`} />
+                <span className="text-xs text-slate-400">g protein</span>
               </>
             )}
           </div>
@@ -4958,13 +4988,19 @@ function FoodEntryRow({ entry, food, onUpdate, onDelete }) {
 
 function MealSection({ meal, entries, customFoods, onUpdate, onDelete, onAddToMeal, isCustom, onDeleteMealType }) {
   const total = entries.reduce((s, e) => s + (e.kcal || 0), 0);
+  const totalProtein = entries.reduce((s, e) => s + (e.protein || 0), 0);
+  const hasProtein = entries.some((e) => e.protein != null);
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className="text-base">{meal.icon}</span>
           <span className="text-sm font-bold text-white">{meal.label}</span>
-          {entries.length > 0 && <span className="text-[11px] text-slate-500">· {total} kcal</span>}
+          {entries.length > 0 && (
+            <span className="text-[11px] text-slate-500">
+              · {total} kcal{hasProtein && <span className="text-pink-300/80"> · {round1(totalProtein)}g protein</span>}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <button onClick={() => onAddToMeal(meal.id)} className="flex items-center gap-1 text-[11px] font-semibold text-pink-300 hover:text-pink-200">
@@ -5059,16 +5095,18 @@ function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defa
   const [restPicked, setRestPicked] = useState(null);
   const [restName, setRestName] = useState("");
   const [restKcal, setRestKcal] = useState(500);
+  const [restProtein, setRestProtein] = useState(0);
   const [manualName, setManualName] = useState("");
   const [manualKcal, setManualKcal] = useState(0);
+  const [manualProtein, setManualProtein] = useState(0);
 
   useEffect(() => {
     if (!open) return;
     setTab(initialTab || "search");
     setMeal(defaultMeal);
     setPicked(null); setQ(""); setCategory("All"); setShowCustomForm(false);
-    setRestPicked(null); setRestName(""); setRestKcal(500);
-    setManualName(""); setManualKcal(0);
+    setRestPicked(null); setRestName(""); setRestKcal(500); setRestProtein(0);
+    setManualName(""); setManualKcal(0); setManualProtein(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, defaultMeal, initialTab]);
 
@@ -5091,17 +5129,27 @@ function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defa
     setPicked(null);
   };
   // restKcal/manualKcal of 0 is valid (e.g. black coffee, diet soda, water) —
-  // only a missing name blocks submission.
+  // only a missing name blocks submission. Protein is optional on both tabs:
+  // a value left at 0 (the default) is treated as "not specified" rather
+  // than "this meal truly has 0g protein" — see newFoodEntry/FoodEntryRow.
   const submitEstimate = () => {
     const name = restPicked ? restPicked.name : restName.trim();
     if (!name) return;
-    onAdd({ meal, source: "estimate", name, amount: 1, unit: "serving", kcal: Math.round(Number(restKcal) || 0) });
-    setRestPicked(null); setRestName(""); setRestKcal(500);
+    onAdd({
+      meal, source: "estimate", name, amount: 1, unit: "serving",
+      kcal: Math.round(Number(restKcal) || 0),
+      protein: Number(restProtein) > 0 ? round1(Number(restProtein)) : null,
+    });
+    setRestPicked(null); setRestName(""); setRestKcal(500); setRestProtein(0);
   };
   const submitManual = () => {
     if (!manualName.trim()) return;
-    onAdd({ meal, source: "manual", name: manualName.trim(), amount: 1, unit: "serving", kcal: Math.round(Number(manualKcal) || 0) });
-    setManualName(""); setManualKcal(0);
+    onAdd({
+      meal, source: "manual", name: manualName.trim(), amount: 1, unit: "serving",
+      kcal: Math.round(Number(manualKcal) || 0),
+      protein: Number(manualProtein) > 0 ? round1(Number(manualProtein)) : null,
+    });
+    setManualName(""); setManualKcal(0); setManualProtein(0);
   };
   const createCustomFood = (payload) => {
     const food = newCustomFood(payload);
@@ -5220,6 +5268,11 @@ function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defa
             <NumberField value={restKcal} onChange={setRestKcal} step={10} min={0} width="w-20" label="estimated calories" />
             <SourceBadge source="estimate" />
           </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-400">Estimated protein</span>
+            <NumberField value={restProtein} onChange={setRestProtein} step={1} min={0} width="w-20" label="estimated protein" />
+            <span className="text-xs text-slate-500">g <span className="text-slate-600">(optional)</span></span>
+          </div>
           <GradientButton size="lg" onClick={submitEstimate} disabled={!(restPicked || restName.trim())}><Plus size={16} /> Add estimate to {mealLabel}</GradientButton>
           {(restPicked || restName.trim()) && !restKcal ? (
             <p className="text-[11px] text-slate-500 -mt-2">Logging as 0 kcal. Adjust above if that's not right.</p>
@@ -5238,6 +5291,11 @@ function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defa
             <span className="text-xs text-slate-400">Calories</span>
             <NumberField value={manualKcal} onChange={setManualKcal} step={10} min={0} width="w-20" label="calories" />
             <SourceBadge source="manual" />
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-400">Protein</span>
+            <NumberField value={manualProtein} onChange={setManualProtein} step={1} min={0} width="w-20" label="protein" />
+            <span className="text-xs text-slate-500">g <span className="text-slate-600">(optional)</span></span>
           </div>
           <GradientButton size="lg" onClick={submitManual} disabled={!manualName.trim()}><Plus size={16} /> Add to {mealLabel}</GradientButton>
           {manualName.trim() && !manualKcal ? (
@@ -5362,6 +5420,8 @@ function BodySettingsCard({ me, onUpdate }) {
   // Sync the draft if the override changes from elsewhere (e.g. cleared via
   // the "Clear" button on another device) so this field never goes stale.
   useEffect(() => { setOverrideDraft(me.calorieTargetOverride ?? ""); }, [me.calorieTargetOverride]);
+  const [proteinOverrideDraft, setProteinOverrideDraft] = useState(me.proteinTargetOverride ?? "");
+  useEffect(() => { setProteinOverrideDraft(me.proteinTargetOverride ?? ""); }, [me.proteinTargetOverride]);
   // Unlike every other numeric input on this page, the override is a plain
   // <input type="number"> rather than a clamped NumberField, so it's the one
   // place a stray "-" or a huge/garbage value could otherwise slip through
@@ -5373,14 +5433,23 @@ function BodySettingsCard({ me, onUpdate }) {
     if (!Number.isFinite(n)) { setOverrideDraft(me.calorieTargetOverride ?? ""); return; }
     onUpdate({ calorieTargetOverride: clamp(Math.round(n), 800, 8000) });
   };
+  // Same reasoning as applyOverride above, clamped to a realistic daily
+  // protein range (grams) instead of a calorie range.
+  const applyProteinOverride = () => {
+    if (proteinOverrideDraft === "") { onUpdate({ proteinTargetOverride: null }); return; }
+    const n = Number(proteinOverrideDraft);
+    if (!Number.isFinite(n)) { setProteinOverrideDraft(me.proteinTargetOverride ?? ""); return; }
+    onUpdate({ proteinTargetOverride: clamp(Math.round(n), 20, 400) });
+  };
   const weight = currentWeightKg(me);
   const bmr = calcBMR({ sex: me.sex || DEFAULT_SEX, weightKg: weight, heightCm: me.heightCm ?? DEFAULT_HEIGHT_CM, age: me.age ?? DEFAULT_AGE });
   const tdee = calcTDEE(bmr, me.activityLevel || DEFAULT_ACTIVITY_LEVEL);
   const target = calorieTargetFor(me);
+  const macroTargets = macroTargetsFor(me);
 
   return (
     <Card className="p-5">
-      <SectionHeading eyebrow="Estimated" title="Body & calorie settings" />
+      <SectionHeading eyebrow="Estimated" title="Body, calorie & protein settings" />
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
         <div>
           <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">Weight</label>
@@ -5426,7 +5495,7 @@ function BodySettingsCard({ me, onUpdate }) {
         <div className="flex items-center justify-between"><span className="text-sm font-bold text-white">Daily target</span><span className="text-lg font-black text-white">{target} kcal</span></div>
         <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1"><Info size={10} className="shrink-0" /> Estimated only — not a medical calculation.</p>
       </div>
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-2 flex-wrap mb-5">
         <span className="text-xs text-slate-400">Manual override</span>
         <input
           type="number" min="800" max="8000" value={overrideDraft} onChange={(e) => setOverrideDraft(e.target.value)} placeholder="e.g. 2000"
@@ -5435,6 +5504,25 @@ function BodySettingsCard({ me, onUpdate }) {
         <GhostButton onClick={applyOverride} className="!px-3 !py-1.5 text-xs">Apply</GhostButton>
         {me.calorieTargetOverride != null && (
           <GhostButton onClick={() => { setOverrideDraft(""); onUpdate({ calorieTargetOverride: null }); }} className="!px-3 !py-1.5 text-xs">Clear</GhostButton>
+        )}
+      </div>
+
+      <div className="rounded-2xl bg-white/[0.03] border border-white/5 p-4 flex flex-col gap-1.5 mb-4">
+        <div className="flex items-center justify-between text-sm"><span className="text-slate-400">Protein (1.8g × bodyweight)</span><span className="text-white font-semibold">{Math.round((Number(weight) || DEFAULT_BODYWEIGHT_KG) * 1.8)}g</span></div>
+        <div className="h-px bg-white/10 my-1" />
+        <div className="flex items-center justify-between"><span className="text-sm font-bold text-white">Daily protein target</span><span className="text-lg font-black text-white">{macroTargets.proteinG}g</span></div>
+        <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1"><Info size={10} className="shrink-0" /> 1.8g per kg bodyweight is a common strength/physique guideline — not a medical calculation.</p>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-slate-400">Manual override</span>
+        <input
+          type="number" min="20" max="400" value={proteinOverrideDraft} onChange={(e) => setProteinOverrideDraft(e.target.value)} placeholder="e.g. 150"
+          className="w-24 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm text-center focus:outline-none focus:ring-1 focus:ring-pink-400/50"
+        />
+        <span className="text-xs text-slate-500">g</span>
+        <GhostButton onClick={applyProteinOverride} className="!px-3 !py-1.5 text-xs">Apply</GhostButton>
+        {me.proteinTargetOverride != null && (
+          <GhostButton onClick={() => { setProteinOverrideDraft(""); onUpdate({ proteinTargetOverride: null }); }} className="!px-3 !py-1.5 text-xs">Clear</GhostButton>
         )}
       </div>
     </Card>
@@ -5494,6 +5582,7 @@ function DietHistorySection({ me }) {
   const stats = useMemo(() => dietStatsForRange(me, startISO, endISO), [me, startISO, endISO]);
 
   const kcalData = stats.dates.map((d, i) => ({ label: formatShortDate(d), kcal: stats.kcalPerDay[i] }));
+  const proteinData = stats.dates.map((d, i) => ({ label: formatShortDate(d), protein: stats.proteinPerDay[i] }));
   const stepsData = stats.dates.map((d, i) => ({ label: formatShortDate(d), steps: stats.stepsPerDay[i] }));
   const minutesData = stats.dates.map((d, i) => ({ label: formatShortDate(d), minutes: stats.minutesPerDay[i] }));
   const weightData = (me.weightHistory || [])
@@ -5511,8 +5600,9 @@ function DietHistorySection({ me }) {
           </div>
         }
       />
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 mb-6">
         <StatBlock icon={<Flame size={16} className="text-orange-400" />} label={`Avg calories (${stats.daysWithFood}/${stats.totalDays}d logged)`} value={`${stats.avgKcal}`} />
+        <StatBlock icon={<Zap size={16} className="text-pink-400" />} label={`Avg protein (${stats.daysWithProtein}/${stats.totalDays}d logged)`} value={`${stats.avgMacros.protein}g`} />
         <StatBlock icon={<Footprints size={16} className="text-sky-400" />} label={`Avg steps (${stats.daysWithSteps}/${stats.totalDays}d logged)`} value={stats.avgSteps.toLocaleString()} />
         <StatBlock icon={<Dumbbell size={16} className="text-amber-400" />} label={`Avg workout (${stats.daysWithMinutes}/${stats.totalDays}d logged)`} value={`${stats.avgMinutes} min`} />
         <StatBlock
@@ -5532,6 +5622,10 @@ function DietHistorySection({ me }) {
         <div>
           <p className="text-xs font-semibold text-slate-400 mb-2">Calorie intake</p>
           <DietAreaChart data={kcalData} dataKey="kcal" color="#d16d94" gradId="dietKcalFill" />
+        </div>
+        <div>
+          <p className="text-xs font-semibold text-slate-400 mb-2">Protein intake</p>
+          <DietAreaChart data={proteinData} dataKey="protein" color="#f472b6" gradId="dietProteinFill" />
         </div>
         <div>
           <p className="text-xs font-semibold text-slate-400 mb-2">Weight trend</p>
