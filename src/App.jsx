@@ -413,12 +413,89 @@ const RECOVERY_TIPS = [
   "Foam rolling or a gentle mobility flow can ease tomorrow's session.",
 ];
 
+// ---- Achievement helper aggregates -----------------------------------
+// A handful of achievements look across a member's *entire* logged history
+// at once (best week, best single session, a muscle group's session count,
+// account tenure) rather than one exercise in isolation. These small, pure
+// helpers compute those aggregates from the same member object every
+// achievement check already receives — no new state, no new plumbing.
+function flattenHistory(s) {
+  const out = [];
+  Object.keys(s.history || {}).forEach((exId) => {
+    (s.history[exId] || []).forEach((h) => out.push({ ...h, exerciseId: exId }));
+  });
+  return out;
+}
+function maxWeightFor(s, exerciseId) {
+  return (s.history?.[exerciseId] || []).reduce((mx, h) => Math.max(mx, h.weight || 0), 0);
+}
+function bigThreeTotal(s) {
+  return maxWeightFor(s, "ex_bench") + maxWeightFor(s, "ex_squat") + maxWeightFor(s, "ex_deadlift");
+}
+function muscleSessionCount(s, muscle) {
+  return Object.keys(s.history || {}).reduce((sum, exId) => {
+    const ex = getEx(exId);
+    return ex?.muscle === muscle ? sum + (s.history[exId] || []).length : sum;
+  }, 0);
+}
+function volumeByDate(s) {
+  const byDate = {};
+  flattenHistory(s).forEach((h) => { byDate[h.date] = (byDate[h.date] || 0) + (h.volume || 0); });
+  return byDate;
+}
+function bestSessionVolume(s) {
+  return Object.values(volumeByDate(s)).reduce((mx, v) => Math.max(mx, v), 0);
+}
+function bestWeekVolume(s) {
+  const byDate = volumeByDate(s);
+  const dates = Object.keys(byDate).sort();
+  let best = 0, lo = 0, sum = 0;
+  for (let hi = 0; hi < dates.length; hi++) {
+    sum += byDate[dates[hi]];
+    while (dates[hi] > addDaysISO(dates[lo], 6)) { sum -= byDate[dates[lo]]; lo++; }
+    best = Math.max(best, sum);
+  }
+  return best;
+}
+function bestMonthDayCount(s) {
+  const months = {};
+  Object.keys(s.worklogs || {}).forEach((iso) => {
+    if (!s.worklogs[iso]?.completedAt) return;
+    const ym = iso.slice(0, 7);
+    months[ym] = (months[ym] || 0) + 1;
+  });
+  return Object.values(months).reduce((mx, v) => Math.max(mx, v), 0);
+}
+function daysSinceJoined(s) {
+  if (!s.joinedAt) return 0;
+  return Math.round((isoToDate(todayISO()) - isoToDate(s.joinedAt)) / 86400000);
+}
+function maxRepsAny(s) {
+  return flattenHistory(s).reduce((mx, h) => Math.max(mx, h.reps || 0), 0);
+}
+function maxWeightAny(s) {
+  return flattenHistory(s).reduce((mx, h) => Math.max(mx, h.weight || 0), 0);
+}
+function musclesTrainedOnDate(s, iso) {
+  const wl = s.worklogs?.[iso];
+  if (!wl) return new Set();
+  return new Set(Object.keys(wl.exercises || {}).map((exId) => getEx(exId)?.muscle).filter(Boolean));
+}
+function bestMusclesInADay(s) {
+  return Object.keys(s.worklogs || {}).reduce((mx, iso) => Math.max(mx, musclesTrainedOnDate(s, iso).size), 0);
+}
+function hasLoggedLoadType(s, loadType) {
+  return Object.keys(s.history || {}).some((exId) => (s.history[exId] || []).length > 0 && getEx(exId)?.loadType === loadType);
+}
+
 const ACHIEVEMENTS = [
   // ---- First steps ----
   { id: "ach_first", name: "First Rep", desc: "Complete your first workout", icon: "🎉", check: (s) => s.totalWorkouts >= 1 },
   { id: "ach_first_pr", name: "New Record", desc: "Set your first personal record", icon: "🥇", check: (s) => s.prCount >= 1 },
   { id: "ach_first_note", name: "Note Taker", desc: "Leave notes on 3 different exercises", icon: "📝", check: (s) => Object.keys(s.exerciseNotes || {}).length >= 3 },
   { id: "ach_first_photo", name: "Say Cheese", desc: "Upload your first progress photo", icon: "📸", check: (s) => (s.photoCount || 0) >= 1 },
+  { id: "ach_first_bodyweight", name: "Bodyweight Believer", desc: "Log your first bodyweight exercise", icon: "🤸", check: (s) => hasLoggedLoadType(s, "bodyweight") },
+  { id: "ach_first_cardio", name: "Cardio Kickoff", desc: "Log your first cardio session", icon: "🏃", check: (s) => hasLoggedLoadType(s, "cardio") },
 
   // ---- Streaks ----
   { id: "ach_streak3", name: "Getting Started", desc: "Reach a 3-day streak", icon: "🌱", check: (s) => s.longestStreak >= 3 },
@@ -427,6 +504,7 @@ const ACHIEVEMENTS = [
   { id: "ach_streak30", name: "Unstoppable", desc: "Reach a 30-day streak", icon: "⚡", check: (s) => s.longestStreak >= 30 },
   { id: "ach_streak60", name: "Iron Habit", desc: "Reach a 60-day streak", icon: "🧲", check: (s) => s.longestStreak >= 60 },
   { id: "ach_streak100", name: "Legendary Streak", desc: "Reach a 100-day streak", icon: "🐉", check: (s) => s.longestStreak >= 100 },
+  { id: "ach_streak180", name: "Half-Year Habit", desc: "Reach a 180-day streak", icon: "🏔️", check: (s) => s.longestStreak >= 180 },
   { id: "ach_streak365", name: "Full Year", desc: "Reach a 365-day streak", icon: "🎇", check: (s) => s.longestStreak >= 365 },
   { id: "ach_weekend", name: "Weekend Warrior", desc: "Log a workout on both a Saturday and a Sunday", icon: "🏖️", check: (s) => {
     const days = new Set(Object.keys(s.worklogs || {}).filter((iso) => s.worklogs[iso]?.completedAt).map((iso) => dayKeyForISO(iso)));
@@ -436,8 +514,10 @@ const ACHIEVEMENTS = [
     const days = new Set(Object.keys(s.worklogs || {}).filter((iso) => s.worklogs[iso]?.completedAt).map((iso) => dayKeyForISO(iso)));
     return DAY_ORDER.every((d) => days.has(d));
   } },
+  { id: "ach_perfect_month", name: "Perfect Month", desc: "Log a workout on 20+ days within a single calendar month", icon: "🌕", check: (s) => bestMonthDayCount(s) >= 20 },
 
   // ---- Workout count ----
+  { id: "ach_workouts5", name: "High Five", desc: "5 workouts completed", icon: "✋", check: (s) => s.totalWorkouts >= 5 },
   { id: "ach_workouts10", name: "Getting Reps In", desc: "10 workouts completed", icon: "🔟", check: (s) => s.totalWorkouts >= 10 },
   { id: "ach_workouts25", name: "Regular", desc: "25 workouts completed", icon: "📅", check: (s) => s.totalWorkouts >= 25 },
   { id: "ach_workouts50", name: "Dedicated", desc: "50 workouts completed", icon: "🥋", check: (s) => s.totalWorkouts >= 50 },
@@ -445,8 +525,10 @@ const ACHIEVEMENTS = [
   { id: "ach_workouts250", name: "Veteran", desc: "250 workouts completed", icon: "🎖️", check: (s) => s.totalWorkouts >= 250 },
   { id: "ach_workouts500", name: "Iron Legend", desc: "500 workouts completed", icon: "🏛️", check: (s) => s.totalWorkouts >= 500 },
   { id: "ach_workouts1000", name: "Gym Immortal", desc: "1,000 workouts completed", icon: "🛡️", check: (s) => s.totalWorkouts >= 1000 },
+  { id: "ach_workouts2000", name: "Forged in Iron", desc: "2,000 workouts completed", icon: "⚒️", check: (s) => s.totalWorkouts >= 2000 },
 
   // ---- Volume ----
+  { id: "ach_volume100", name: "Loading Up", desc: "100 kg total volume lifted", icon: "🧱", check: (s) => s.totalVolume >= 100 },
   { id: "ach_volume1k", name: "First Ton", desc: "1,000 kg total volume lifted", icon: "🪨", check: (s) => s.totalVolume >= 1000 },
   { id: "ach_volume10k", name: "Heavy Lifter", desc: "10,000 kg total volume", icon: "💪", check: (s) => s.totalVolume >= 10000 },
   { id: "ach_volume50k", name: "Iron Will", desc: "50,000 kg total volume", icon: "🦾", check: (s) => s.totalVolume >= 50000 },
@@ -454,23 +536,30 @@ const ACHIEVEMENTS = [
   { id: "ach_volume250k", name: "Quarter Million", desc: "250,000 kg total volume", icon: "🚂", check: (s) => s.totalVolume >= 250000 },
   { id: "ach_volume500k", name: "Half Million Club", desc: "500,000 kg total volume", icon: "🛳️", check: (s) => s.totalVolume >= 500000 },
   { id: "ach_volume1m", name: "Million Kilogram Club", desc: "1,000,000 kg total volume", icon: "🚀", check: (s) => s.totalVolume >= 1000000 },
+  { id: "ach_volume2m", name: "Two Million Club", desc: "2,000,000 kg total volume", icon: "🌌", check: (s) => s.totalVolume >= 2000000 },
 
   // ---- Level / XP ----
+  { id: "ach_level3", name: "Warming Up", desc: "Reach level 3", icon: "🔆", check: (s) => s.level >= 3 },
   { id: "ach_level5", name: "Rising Star", desc: "Reach level 5", icon: "⭐", check: (s) => s.level >= 5 },
   { id: "ach_level10", name: "Elite", desc: "Reach level 10", icon: "🏆", check: (s) => s.level >= 10 },
   { id: "ach_level20", name: "Champion", desc: "Reach level 20", icon: "👑", check: (s) => s.level >= 20 },
   { id: "ach_level30", name: "Legend", desc: "Reach level 30", icon: "🌟", check: (s) => s.level >= 30 },
   { id: "ach_level50", name: "Mythic", desc: "Reach level 50", icon: "🔮", check: (s) => s.level >= 50 },
+  { id: "ach_level75", name: "Titan", desc: "Reach level 75", icon: "🗿", check: (s) => s.level >= 75 },
+  { id: "ach_level100", name: "Level 100 Legend", desc: "Reach level 100", icon: "💠", check: (s) => s.level >= 100 },
 
   // ---- Personal records ----
   { id: "ach_pr5", name: "Record Breaker", desc: "Set 5 personal records", icon: "📈", check: (s) => s.prCount >= 5 },
   { id: "ach_pr20", name: "PR Machine", desc: "Set 20 personal records", icon: "⚙️", check: (s) => s.prCount >= 20 },
   { id: "ach_pr50", name: "Record Hunter", desc: "Set 50 personal records", icon: "🎯", check: (s) => s.prCount >= 50 },
+  { id: "ach_pr100", name: "Record Collector", desc: "Set 100 personal records", icon: "🏅", check: (s) => s.prCount >= 100 },
 
   // ---- Exercise variety ----
+  { id: "ach_variety5", name: "Branching Out", desc: "Log 5 different exercises", icon: "🌿", check: (s) => Object.keys(s.history || {}).filter((k) => (s.history[k] || []).length > 0).length >= 5 },
   { id: "ach_variety10", name: "Well Rounded", desc: "Log 10 different exercises", icon: "🧩", check: (s) => Object.keys(s.history || {}).filter((k) => (s.history[k] || []).length > 0).length >= 10 },
   { id: "ach_variety25", name: "Explorer", desc: "Log 25 different exercises", icon: "🗺️", check: (s) => Object.keys(s.history || {}).filter((k) => (s.history[k] || []).length > 0).length >= 25 },
   { id: "ach_variety50", name: "Master of All", desc: "Log 50 different exercises", icon: "🎓", check: (s) => Object.keys(s.history || {}).filter((k) => (s.history[k] || []).length > 0).length >= 50 },
+  { id: "ach_variety75", name: "Exercise Encyclopedia", desc: "Log 75 different exercises", icon: "📚", check: (s) => Object.keys(s.history || {}).filter((k) => (s.history[k] || []).length > 0).length >= 75 },
 
   // ---- Milestone lifts ----
   { id: "ach_bench_bw", name: "Bodyweight Bench", desc: "Bench press your own bodyweight", icon: "🏋️", check: (s) => (s.history?.ex_bench || []).some((h) => h.weight >= (s.bodyweightKg || DEFAULT_BODYWEIGHT_KG)) },
@@ -481,6 +570,58 @@ const ACHIEVEMENTS = [
   { id: "ach_deadlift_180", name: "Deadlift 180", desc: "Deadlift 180 kg", icon: "⚓", check: (s) => (s.history?.ex_deadlift || []).some((h) => h.weight >= 180) },
   { id: "ach_pullup_10", name: "Pull-Up Pro", desc: "Complete 10 pull-ups in a single set", icon: "🧗", check: (s) => (s.history?.ex_pullup || []).some((h) => h.reps >= 10) },
   { id: "ach_pushup_50", name: "Push-Up Machine", desc: "Complete 50 push-ups in a single set", icon: "🤸", check: (s) => (s.history?.ex_pushup || []).some((h) => h.reps >= 50) },
+  { id: "ach_ohp_bw", name: "Overhead Bodyweight", desc: "Overhead press your own bodyweight", icon: "🎯", check: (s) => (s.history?.ex_ohp || []).some((h) => h.weight >= (s.bodyweightKg || DEFAULT_BODYWEIGHT_KG)) },
+  { id: "ach_row_100", name: "Row 100", desc: "Barbell row 100 kg", icon: "🚣", check: (s) => (s.history?.ex_row || []).some((h) => h.weight >= 100) },
+  { id: "ach_frontsquat_100", name: "Front Squat 100", desc: "Front squat 100 kg", icon: "🦵", check: (s) => (s.history?.ex_frontsquat || []).some((h) => h.weight >= 100) },
+  { id: "ach_rdl_120", name: "RDL 120", desc: "Romanian deadlift 120 kg", icon: "🦵", check: (s) => (s.history?.ex_rdl || []).some((h) => h.weight >= 120) },
+  { id: "ach_hipthrust_150", name: "Hip Thrust 150", desc: "Barbell hip thrust 150 kg", icon: "🍑", check: (s) => (s.history?.ex_hip_thrust || []).some((h) => h.weight >= 150) },
+  { id: "ach_legpress_200", name: "Leg Press 200", desc: "Leg press 200 kg", icon: "🦿", check: (s) => (s.history?.ex_legpress || []).some((h) => h.weight >= 200) },
+  { id: "ach_curl_40", name: "Curl 40", desc: "Barbell curl 40 kg", icon: "💪", check: (s) => (s.history?.ex_curl || []).some((h) => h.weight >= 40) },
+  { id: "ach_chinup_15", name: "Chin-Up Champion", desc: "Complete 15 chin-ups in a single set", icon: "🧗", check: (s) => (s.history?.ex_chinup || []).some((h) => h.reps >= 15) },
+  { id: "ach_dip_20", name: "Dip Devotee", desc: "Complete 20 triceps dips in a single set", icon: "🤸", check: (s) => (s.history?.ex_dip || []).some((h) => h.reps >= 20) },
+  { id: "ach_muscleup_1", name: "First Muscle-Up", desc: "Land your first muscle-up", icon: "🚀", check: (s) => (s.history?.ex_muscle_up || []).some((h) => h.reps >= 1) },
+  { id: "ach_wpullup_1", name: "Weighted Pull-Up", desc: "Complete a weighted pull-up with added load", icon: "⛓️", check: (s) => (s.history?.ex_weighted_pullup || []).some((h) => (h.addedWeight || 0) > 0) },
+  { id: "ach_hspu_1", name: "Handstand Push-Up", desc: "Complete a handstand push-up", icon: "🙃", check: (s) => (s.history?.ex_handstand_pushup || []).some((h) => h.reps >= 1) },
+
+  // ---- Powerlifting total (best-ever bench + squat + deadlift, not necessarily same day) ----
+  { id: "ach_total300", name: "Novice Total", desc: "Bench + squat + deadlift best-ever total reaches 300 kg", icon: "🥉", check: (s) => bigThreeTotal(s) >= 300 },
+  { id: "ach_total500", name: "Intermediate Total", desc: "Bench + squat + deadlift best-ever total reaches 500 kg", icon: "🥈", check: (s) => bigThreeTotal(s) >= 500 },
+  { id: "ach_total700", name: "Advanced Total", desc: "Bench + squat + deadlift best-ever total reaches 700 kg", icon: "🥇", check: (s) => bigThreeTotal(s) >= 700 },
+  { id: "ach_total900", name: "Elite Total", desc: "Bench + squat + deadlift best-ever total reaches 900 kg", icon: "👑", check: (s) => bigThreeTotal(s) >= 900 },
+
+  // ---- Weekly & single-session volume ----
+  { id: "ach_bigweek_3k", name: "Big Week", desc: "3,000 kg total volume within any 7-day span", icon: "📆", check: (s) => bestWeekVolume(s) >= 3000 },
+  { id: "ach_bigweek_10k", name: "Monster Week", desc: "10,000 kg total volume within any 7-day span", icon: "🌊", check: (s) => bestWeekVolume(s) >= 10000 },
+  { id: "ach_bigsession_1k", name: "Heavy Session", desc: "1,000 kg total volume in a single session", icon: "🔋", check: (s) => bestSessionVolume(s) >= 1000 },
+  { id: "ach_bigsession_3k", name: "Monster Session", desc: "3,000 kg total volume in a single session", icon: "⚡", check: (s) => bestSessionVolume(s) >= 3000 },
+
+  // ---- Engagement: notes & photos ----
+  { id: "ach_notes10", name: "Journaling Habit", desc: "Leave notes on 10 different exercises", icon: "🖊️", check: (s) => Object.keys(s.exerciseNotes || {}).length >= 10 },
+  { id: "ach_notes25", name: "Master Chronicler", desc: "Leave notes on 25 different exercises", icon: "📔", check: (s) => Object.keys(s.exerciseNotes || {}).length >= 25 },
+  { id: "ach_photos10", name: "Progress Documentarian", desc: "Upload 10 progress photos", icon: "🎞️", check: (s) => (s.photoCount || 0) >= 10 },
+  { id: "ach_photos30", name: "Visual Diary", desc: "Upload 30 progress photos", icon: "🗂️", check: (s) => (s.photoCount || 0) >= 30 },
+
+  // ---- Tenure ----
+  { id: "ach_tenure90", name: "Three Months In", desc: "Be a member for 90 days", icon: "🌤️", check: (s) => daysSinceJoined(s) >= 90 },
+  { id: "ach_tenure365", name: "One-Year Anniversary", desc: "Be a member for 1 year", icon: "🎂", check: (s) => daysSinceJoined(s) >= 365 },
+  { id: "ach_tenure730", name: "Two-Year Veteran", desc: "Be a member for 2 years", icon: "🏵️", check: (s) => daysSinceJoined(s) >= 730 },
+
+  // ---- Muscle-group specialists ----
+  { id: "ach_spec_chest", name: "Chest Specialist", desc: "Log 30 chest sessions", icon: "🎽", check: (s) => muscleSessionCount(s, "Chest") >= 30 },
+  { id: "ach_spec_back", name: "Back Specialist", desc: "Log 30 back sessions", icon: "🚣", check: (s) => muscleSessionCount(s, "Back") >= 30 },
+  { id: "ach_spec_legs", name: "Leg Day Legend", desc: "Log 30 leg sessions", icon: "🦵", check: (s) => muscleSessionCount(s, "Legs") >= 30 },
+  { id: "ach_spec_shoulders", name: "Shoulder Sculptor", desc: "Log 30 shoulder sessions", icon: "🙆", check: (s) => muscleSessionCount(s, "Shoulders") >= 30 },
+  { id: "ach_spec_arms", name: "Arm Day Enthusiast", desc: "Log 30 arm sessions", icon: "💪", check: (s) => muscleSessionCount(s, "Arms") >= 30 },
+  { id: "ach_spec_glutes", name: "Glute Gains", desc: "Log 30 glute sessions", icon: "🍑", check: (s) => muscleSessionCount(s, "Glutes") >= 30 },
+  { id: "ach_spec_core", name: "Core Crusher", desc: "Log 30 core sessions", icon: "🧘", check: (s) => muscleSessionCount(s, "Core") >= 30 },
+  { id: "ach_spec_cardio", name: "Cardio Devotee", desc: "Log 30 cardio sessions", icon: "🏃", check: (s) => muscleSessionCount(s, "Cardio") >= 30 },
+  { id: "ach_fullbody_day", name: "Full Body Day", desc: "Train 4+ different muscle groups in a single day", icon: "🌈", check: (s) => bestMusclesInADay(s) >= 4 },
+
+  // ---- Generic feats (any exercise) ----
+  { id: "ach_highrep30", name: "High-Rep Hero", desc: "Complete 30 reps in a single set of any exercise", icon: "🔁", check: (s) => maxRepsAny(s) >= 30 },
+  { id: "ach_highrep60", name: "Rep Titan", desc: "Complete 60 reps in a single set of any exercise", icon: "♾️", check: (s) => maxRepsAny(s) >= 60 },
+  { id: "ach_heavy150", name: "Heavy Hitter", desc: "Log 150 kg or more in a single set of any exercise", icon: "🏗️", check: (s) => maxWeightAny(s) >= 150 },
+  { id: "ach_heavy200", name: "Two Plates Plus", desc: "Log 200 kg or more in a single set of any exercise", icon: "🏔️", check: (s) => maxWeightAny(s) >= 200 },
 ];
 
 /* -------------------------------- Utils --------------------------------- */
@@ -1643,19 +1784,85 @@ function DoneExerciseCard({ inst, onOpen, onSave, bodyweightKg }) {
 
 /* =============================== Day detail ================================ */
 // Reached by tapping a date on the Consistency calendar. Shows what was scheduled
-// and what got logged that day. Editing sets/completion is only ever done on the
-// live Today page, so this is a read-only summary — except for today itself,
-// which links straight over to the real Today page.
-function DayDetailPage({ iso, me, programs, onBack, openExercise, goToToday }) {
+// and what got logged that day, and — for any date, past or present — lets you
+// log, edit, or clear each exercise's numbers right here via an inline editor,
+// independent of the live Today page.
+function DayDetailExerciseRow({ iso, e, ex, doneEntry, bodyweightKg, onOpen, onSaveEntry, onClearEntry }) {
+  const [editing, setEditing] = useState(false);
+  const isCardio = ex?.loadType === "cardio";
+  const defaults = doneEntry
+    ? { sets: doneEntry.sets, reps: doneEntry.reps, weight: doneEntry.weight, addedWeight: doneEntry.addedWeight }
+    : { sets: e.sets, reps: e.reps, weight: e.targetWeight ?? 0, addedWeight: e.targetAddedWeight ?? 0 };
+  const [draft, setDraft] = useState(defaults);
+
+  const startEditing = () => { setDraft(defaults); setEditing(true); };
+  const volume = volumeOf(draft.sets, draft.reps, draft.weight);
+
+  if (editing) {
+    return (
+      <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 flex flex-col gap-3">
+        <div className="flex items-center gap-3"><span className="text-2xl">{ex?.icon}</span><span className="text-white font-semibold text-sm">{ex?.name}</span></div>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-400">
+          <div className="flex items-center gap-1.5">Sets <NumberField value={draft.sets} onChange={(v) => setDraft((d) => ({ ...d, sets: v }))} step={1} min={1} width="w-10" label="sets" /></div>
+          <div className="flex items-center gap-1.5">Reps <NumberField value={draft.reps} onChange={(v) => setDraft((d) => ({ ...d, reps: v }))} step={1} min={1} width="w-10" label="reps" /></div>
+          {!isCardio && (
+            <div className="flex items-center gap-1.5">
+              {ex?.loadType === "bodyweight" ? "Added" : "Weight"}{" "}
+              <LoadField ex={ex} weight={draft.weight} addedWeight={draft.addedWeight} bodyweightKg={bodyweightKg} done={false} onChange={(p) => setDraft((d) => ({ ...d, ...p }))} />
+            </div>
+          )}
+          {!isCardio && <div className="ml-auto text-slate-500">Volume <b className="text-emerald-300">{volume}kg</b></div>}
+        </div>
+        <div className="flex gap-2 justify-end flex-wrap">
+          {doneEntry && (
+            <GhostButton danger onClick={() => { onClearEntry(iso, e.exerciseId); setEditing(false); }}>
+              <Trash2 size={14} /> Clear log
+            </GhostButton>
+          )}
+          <GhostButton onClick={() => setEditing(false)}>Cancel</GhostButton>
+          <GradientButton onClick={() => { onSaveEntry(iso, e.exerciseId, draft); setEditing(false); }}><Save size={14} /> Save</GradientButton>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`flex items-center justify-between gap-3 p-3.5 rounded-2xl border transition-colors ${doneEntry ? "border-emerald-500/20 bg-emerald-500/5 hover:border-emerald-500/30" : "border-white/5 bg-white/[0.02] hover:border-white/10"}`}
+    >
+      <div className="flex items-center gap-3 min-w-0 cursor-pointer" onClick={() => onOpen(e.exerciseId)}>
+        <span className="text-xl shrink-0">{ex?.icon}</span>
+        <div className="min-w-0">
+          <div className="text-white text-sm font-semibold truncate">{ex?.name}</div>
+          <div className="text-[11px] text-slate-400">
+            {doneEntry
+              ? `${doneEntry.sets}×${doneEntry.reps}${ex?.loadType !== "cardio" ? ` @ ${doneEntry.weight}kg` : ""}`
+              : `Target ${e.sets}×${e.reps}`}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {doneEntry ? <Check size={16} className="text-emerald-400" /> : <span className="text-[11px] text-slate-500">Not logged</span>}
+        <button
+          onClick={startEditing}
+          aria-label={doneEntry ? `Edit logged ${ex?.name || "exercise"}` : `Log ${ex?.name || "exercise"}`}
+          className="p-1.5 rounded-xl hover:bg-white/10 text-slate-400 hover:text-white"
+        >
+          <Pencil size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DayDetailPage({ iso, me, programs, onBack, openExercise, goToToday, onEditEntry, onClearEntry }) {
   const program = me.activeProgramId ? programs[me.activeProgramId] : null;
   const dayKey = dayKeyForISO(iso);
   const sched = program?.days?.[dayKey];
   const log = me.worklogs[iso];
   const isToday = iso === todayISO();
   const isWorkoutDay = program && sched?.type === "workout";
-  const loggedVolume = log?.completedAt
-    ? Object.values(log.exercises || {}).reduce((s, e) => s + volumeOf(e.sets, e.reps, e.weight), 0)
-    : 0;
+  const loggedVolume = Object.values(log?.exercises || {}).reduce((s, e) => s + volumeOf(e.sets, e.reps, e.weight), 0);
 
   return (
     <div className="flex flex-col gap-6">
@@ -1670,7 +1877,7 @@ function DayDetailPage({ iso, me, programs, onBack, openExercise, goToToday }) {
 
       {isToday && (
         <Card className="p-4 flex items-center justify-between gap-3 flex-wrap">
-          <span className="text-sm text-slate-300">This is today — log or edit sets on the Today tab.</span>
+          <span className="text-sm text-slate-300">This is today — you can also log or edit sets on the Today tab.</span>
           <GradientButton size="sm" onClick={goToToday}>Go to Today <ChevronRight size={14} /></GradientButton>
         </Card>
       )}
@@ -1684,30 +1891,18 @@ function DayDetailPage({ iso, me, programs, onBack, openExercise, goToToday }) {
         <Card className="p-5">
           <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
             <SectionHeading eyebrow="Session" title={program.name} />
-            {log?.completedAt && <span className="text-xs font-semibold text-emerald-300 shrink-0">Volume {loggedVolume}kg</span>}
+            {loggedVolume > 0 && <span className="text-xs font-semibold text-emerald-300 shrink-0">Volume {loggedVolume}kg</span>}
           </div>
+          <p className="text-[11px] text-slate-500 -mt-2 mb-1">Tap the pencil to log, edit, or clear any exercise for this day.</p>
           <div className="flex flex-col gap-2.5">
             {sched.exercises.map((e, i) => {
               const ex = getEx(e.exerciseId);
               const doneEntry = log?.exercises?.[e.exerciseId];
               return (
-                <div
-                  key={i} onClick={() => openExercise(e.exerciseId)}
-                  className={`flex items-center justify-between gap-3 p-3.5 rounded-2xl border cursor-pointer transition-colors ${doneEntry ? "border-emerald-500/20 bg-emerald-500/5 hover:border-emerald-500/30" : "border-white/5 bg-white/[0.02] hover:border-white/10"}`}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span className="text-xl shrink-0">{ex?.icon}</span>
-                    <div className="min-w-0">
-                      <div className="text-white text-sm font-semibold truncate">{ex?.name}</div>
-                      <div className="text-[11px] text-slate-400">
-                        {doneEntry
-                          ? `${doneEntry.sets}×${doneEntry.reps}${ex?.loadType !== "cardio" ? ` @ ${doneEntry.weight}kg` : ""}`
-                          : `Target ${e.sets}×${e.reps}`}
-                      </div>
-                    </div>
-                  </div>
-                  {doneEntry ? <Check size={16} className="text-emerald-400 shrink-0" /> : <span className="text-[11px] text-slate-500 shrink-0">Not logged</span>}
-                </div>
+                <DayDetailExerciseRow
+                  key={e.id || i} iso={iso} e={e} ex={ex} doneEntry={doneEntry} bodyweightKg={me.bodyweightKg}
+                  onOpen={openExercise} onSaveEntry={onEditEntry} onClearEntry={onClearEntry}
+                />
               );
             })}
           </div>
@@ -1862,6 +2057,85 @@ function ExerciseDetailPage({ exerciseId, me, onBack, onSaveNote, onSaveInstruct
         />
       </Card>
     </div>
+  );
+}
+
+/* ===================== Read-only exercise peek (other members) ============= */
+// A lightweight modal — not a full page navigation — showing another member's
+// stats/history/notes for one exercise. Reached by tapping an exercise inside
+// their program modal. Deliberately read-only: no note/instruction editing,
+// since this isn't "your" data.
+function MemberExerciseModal({ exerciseId, member, onClose }) {
+  const ex = exerciseId ? getEx(exerciseId) : null;
+  const hist = useMemo(
+    () => (exerciseId ? (member.history[exerciseId] || []).slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)) : []),
+    [exerciseId, member]
+  );
+  const stats = useMemo(() => exerciseStats(hist), [hist]);
+  const [metric, setMetric] = useState("weight");
+
+  return (
+    <Modal open={!!exerciseId} onClose={onClose} title={ex?.name || "Exercise"} size="lg">
+      {!ex ? (
+        <EmptyState icon="❓" title="Exercise not found" sub="This exercise may have been removed from the shared library." />
+      ) : (
+        <div className="flex flex-col gap-5">
+          <div className="flex items-center gap-4">
+            <div className={`w-14 h-14 rounded-2xl ${GRAD_DIAG} flex items-center justify-center text-2xl shrink-0`}>{ex.icon}</div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-white/5 text-slate-300 border border-white/10">{ex.muscle}</span>
+                {(ex.secondary || []).map((m) => (
+                  <span key={m} className="text-[11px] font-medium px-2 py-1 rounded-full bg-white/[0.03] text-slate-500 border border-white/5">{m}</span>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">{member.name}'s numbers for this exercise</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatBlock icon={<Trophy size={16} className="text-amber-400" />} label="Personal record" value={stats.pr ? `${stats.pr.weight}kg` : "—"} />
+            <StatBlock icon={<Activity size={16} className="text-pink-400" />} label="Lifetime volume" value={`${stats.lifetime.toLocaleString()}kg`} />
+            <StatBlock icon={<Calendar size={16} className="text-emerald-400" />} label="This week" value={`${stats.weekly.toLocaleString()}kg`} />
+            <StatBlock icon={<BarChart3 size={16} className="text-emerald-400" />} label="This month" value={`${stats.monthly.toLocaleString()}kg`} />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
+              <SectionHeading eyebrow="Trend" title="Progress" />
+              <div className="flex gap-2">
+                {["weight", "volume", "reps"].map((m) => <Chip key={m} active={metric === m} onClick={() => setMetric(m)}>{m[0].toUpperCase() + m.slice(1)}</Chip>)}
+              </div>
+            </div>
+            <ExerciseChart hist={hist} metric={metric} />
+          </div>
+
+          <div>
+            <SectionHeading eyebrow="History" title="Previous sessions" />
+            {hist.length === 0 ? (
+              <p className="text-sm text-slate-500">No sessions logged yet.</p>
+            ) : (
+              <div className="flex flex-col divide-y divide-white/5">
+                {hist.slice(-6).reverse().map((h, i) => (
+                  <div key={i} className="flex items-center justify-between py-2.5 text-sm">
+                    <span className="text-slate-400">{formatShortDate(h.date)}</span>
+                    <span className="text-slate-300">{h.sets}×{h.reps} @ {h.weight}kg</span>
+                    <span className="text-emerald-300 font-semibold">{h.volume}kg vol</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {member.exerciseNotes?.[exerciseId] && (
+            <div>
+              <SectionHeading eyebrow="Notes" title={`${member.name}'s notes`} />
+              <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{member.exerciseNotes[exerciseId]}</p>
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -2482,7 +2756,7 @@ function aggregateVolumeByDate(member) {
   return Object.entries(map).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).slice(-10).map(([date, vol]) => ({ date: formatShortDate(date), vol }));
 }
 
-function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
+function MemberProfilePage({ member, me, programs, onBack, onRemove, onCopyProgram }) {
   const lvl = levelInfo(member.xp);
   const program = member.activeProgramId ? programs[member.activeProgramId] : null;
   const volData = useMemo(() => aggregateVolumeByDate(member), [member]);
@@ -2490,6 +2764,8 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [programOpen, setProgramOpen] = useState(false);
   const [activeDay, setActiveDay] = useState(() => DAY_FROM_JS[new Date().getDay()]);
+  const [peekExerciseId, setPeekExerciseId] = useState(null);
+  const isOtherMember = member.id !== me.id;
   const openProgram = (day) => {
     if (day) setActiveDay(day);
     setProgramOpen(true);
@@ -2556,8 +2832,20 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
       )}
 
       {program && (
-        <Modal open={programOpen} onClose={() => setProgramOpen(false)} title={program.name} size="lg">
+        <Modal
+          open={programOpen} onClose={() => setProgramOpen(false)} title={program.name} size="lg"
+          footer={isOtherMember ? (
+            <GradientButton onClick={() => { onCopyProgram(program.id); setProgramOpen(false); }}>
+              <Copy size={14} /> Copy to my programs
+            </GradientButton>
+          ) : null}
+        >
           {program.description && <p className="text-sm text-slate-400 mb-4 -mt-1">{program.description}</p>}
+          {isOtherMember && (
+            <p className="text-[11px] text-slate-500 mb-4 -mt-2">
+              Tap an exercise to see {member.name}'s numbers. Copying keeps your own sets/reps/weight for any exercise already in one of your programs.
+            </p>
+          )}
           <div className="flex flex-wrap gap-1.5 mb-5">
             {DAY_ORDER.map((d) => {
               const sched = program.days[d];
@@ -2598,7 +2886,12 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
                   const isCardio = ex?.loadType === "cardio";
                   const isBW = ex?.loadType === "bodyweight";
                   return (
-                    <div key={pex.id || i} className="rounded-2xl bg-white/[0.04] border border-white/10 p-3.5 flex items-center gap-3">
+                    <button
+                      key={pex.id || i}
+                      onClick={() => setPeekExerciseId(pex.exerciseId)}
+                      aria-label={`View ${member.name}'s data for ${ex?.name || "this exercise"}`}
+                      className="w-full text-left rounded-2xl bg-white/[0.04] border border-white/10 hover:border-white/25 hover:bg-white/[0.07] transition-colors p-3.5 flex items-center gap-3"
+                    >
                       <span className="text-xl shrink-0">{ex?.icon || "🏋️"}</span>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-white font-medium truncate">{ex?.name || "Unknown exercise"}</div>
@@ -2613,7 +2906,8 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
                           </span>
                         )}
                       </div>
-                    </div>
+                      <ChevronRight size={15} className="text-slate-600 shrink-0" />
+                    </button>
                   );
                 })}
               </div>
@@ -2621,6 +2915,8 @@ function MemberProfilePage({ member, me, programs, onBack, onRemove }) {
           })()}
         </Modal>
       )}
+
+      <MemberExerciseModal exerciseId={peekExerciseId} member={member} onClose={() => setPeekExerciseId(null)} />
 
       <Card className="p-5">
         <SectionHeading eyebrow="Trend" title="Volume over time" />
@@ -3381,6 +3677,175 @@ function completeExerciseOnMember(m, finalizedInst, allInstances, program) {
   return { next, xpGain, allDone };
 }
 
+// Insert/replace a history entry for a specific date, keeping the array sorted
+// chronologically (existing entries are always date-ordered since they're
+// normally appended for "today"; editing an arbitrary past date can otherwise
+// leave the array out of order, which would throw off anything — like the
+// exercise trend chart — that reads the tail as "most recent").
+function upsertHistoryEntry(hist, iso, entry) {
+  const idx = hist.findIndex((h) => h.date === iso);
+  let next;
+  if (idx >= 0) {
+    next = [...hist];
+    next[idx] = { ...next[idx], ...entry, date: iso };
+  } else {
+    next = [...hist, { date: iso, ...entry }];
+  }
+  next.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return next;
+}
+function removeHistoryEntry(hist, iso) {
+  return hist.filter((h) => h.date !== iso);
+}
+
+// Recompute PR flags for one exercise's entire history in true chronological
+// order (each entry is a PR iff it beats every strictly-earlier entry).
+// Needed because calendar edits can insert/remove a date out of order — e.g.
+// backfilling a forgotten session that turns out heavier than a "PR" you'd
+// already logged later — which a single-date comparison can't catch.
+// `originalWorklogs` (the member's worklogs *before* this edit) is used only
+// to compute the old PR count for the totals delta; `workingWorklogs` (which
+// already reflects the in-progress add/edit/remove) is what gets patched with
+// the corrected flags and returned.
+function recomputeExercisePRFlags(originalWorklogs, workingWorklogs, exerciseId, sortedHist) {
+  let worklogs = workingWorklogs;
+  let runningMax = -Infinity;
+  let oldPRCount = 0;
+  let newPRCount = 0;
+  sortedHist.forEach((h) => {
+    const isPRNow = h.weight > runningMax;
+    if (h.weight > runningMax) runningMax = h.weight;
+    if (originalWorklogs[h.date]?.exercises?.[exerciseId]?.isPR) oldPRCount++;
+    if (isPRNow) newPRCount++;
+    const wl = worklogs[h.date];
+    const curEntry = wl?.exercises?.[exerciseId];
+    if (curEntry && curEntry.isPR !== isPRNow) {
+      worklogs = { ...worklogs, [h.date]: { ...wl, exercises: { ...wl.exercises, [exerciseId]: { ...curEntry, isPR: isPRNow } } } };
+    }
+  });
+  return { worklogs, prDelta: newPRCount - oldPRCount };
+}
+
+// Log or edit a single exercise's numbers for an arbitrary date (past, present,
+// or otherwise), used by the Day Detail page reached from the calendar. This
+// mirrors completeExerciseOnMember/handleEditDone but is date-generic and —
+// deliberately — never touches streaks or syncs program targets, since those
+// are sequential/"current state" concepts that a retroactive edit shouldn't
+// silently rewrite.
+function upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched) {
+  const hist = m.history[exerciseId] || [];
+  const existingIdx = hist.findIndex((h) => h.date === iso);
+  const oldVol = existingIdx >= 0 ? hist[existingIdx].volume : 0;
+  const newVol = volumeOf(patch.sets, patch.reps, patch.weight);
+  const newHist = upsertHistoryEntry(hist, iso, {
+    sets: patch.sets, reps: patch.reps, weight: patch.weight, addedWeight: patch.addedWeight, volume: newVol,
+  });
+
+  const wl = m.worklogs[iso] || { exercises: {} };
+  const wasLogged = !!wl.exercises?.[exerciseId];
+  const exercisesWithEntry = {
+    ...wl.exercises,
+    [exerciseId]: { sets: patch.sets, reps: patch.reps, weight: patch.weight, addedWeight: patch.addedWeight, done: true, isPR: false },
+  };
+  const workingWorklogs = { ...m.worklogs, [iso]: { ...wl, exercises: exercisesWithEntry } };
+
+  const { worklogs: worklogsAfterPR, prDelta } = recomputeExercisePRFlags(m.worklogs, workingWorklogs, exerciseId, newHist);
+  const wlAfter = worklogsAfterPR[iso];
+
+  let completedAt = wl.completedAt;
+  let workoutsDelta = 0;
+  const allDoneNow = sched?.type === "workout" ? (sched.exercises || []).every((e) => wlAfter.exercises[e.exerciseId]) : false;
+  if (allDoneNow && !wl.completedAt) { completedAt = Date.now(); workoutsDelta = 1; }
+  else if (!allDoneNow && wl.completedAt) { completedAt = null; workoutsDelta = -1; }
+
+  const xpDelta = prDelta * 10 + (wasLogged ? 0 : 15) + workoutsDelta * 50;
+
+  let next = {
+    ...m,
+    history: { ...m.history, [exerciseId]: newHist },
+    worklogs: { ...worklogsAfterPR, [iso]: { ...wlAfter, completedAt } },
+    totalVolume: Math.max(0, (m.totalVolume || 0) - oldVol + newVol),
+    prCount: Math.max(0, (m.prCount || 0) + prDelta),
+    totalWorkouts: Math.max(0, (m.totalWorkouts || 0) + workoutsDelta),
+    xp: Math.max(0, (m.xp || 0) + xpDelta),
+  };
+  next.level = levelInfo(next.xp).level;
+  next.unlocked = recomputeAchievements(next);
+  const newIsPR = next.worklogs[iso].exercises[exerciseId].isPR;
+  return { next, newIsPR, workoutsDelta };
+}
+
+// Revert a logged exercise on an arbitrary date back to "not logged" — undoes
+// exactly what upsertWorklogEntryForDate would have added, nothing else, and
+// re-checks whether removing this entry hands the PR badge to a different date.
+function clearWorklogEntryForDate(m, iso, exerciseId) {
+  const wl = m.worklogs[iso];
+  const entry = wl?.exercises?.[exerciseId];
+  if (!entry) return { next: m, changed: false };
+
+  const hist = m.history[exerciseId] || [];
+  const idx = hist.findIndex((h) => h.date === iso);
+  const oldVol = idx >= 0 ? hist[idx].volume : 0;
+
+  const newHist = removeHistoryEntry(hist, iso);
+  const exercisesWithoutEntry = { ...wl.exercises };
+  delete exercisesWithoutEntry[exerciseId];
+  const workingWorklogs = { ...m.worklogs, [iso]: { ...wl, exercises: exercisesWithoutEntry } };
+
+  const { worklogs: worklogsAfterPR, prDelta } = recomputeExercisePRFlags(m.worklogs, workingWorklogs, exerciseId, newHist);
+  const wlAfter = worklogsAfterPR[iso];
+
+  let completedAt = wl.completedAt;
+  let workoutsDelta = 0;
+  if (wl.completedAt) { completedAt = null; workoutsDelta = -1; }
+
+  const xpDelta = prDelta * 10 - 15 + workoutsDelta * 50;
+
+  let next = {
+    ...m,
+    history: { ...m.history, [exerciseId]: newHist },
+    worklogs: { ...worklogsAfterPR, [iso]: { ...wlAfter, completedAt } },
+    totalVolume: Math.max(0, (m.totalVolume || 0) - oldVol),
+    prCount: Math.max(0, (m.prCount || 0) + prDelta),
+    totalWorkouts: Math.max(0, (m.totalWorkouts || 0) + workoutsDelta),
+    xp: Math.max(0, (m.xp || 0) + xpDelta),
+  };
+  next.level = levelInfo(next.xp).level;
+  next.unlocked = recomputeAchievements(next);
+  return { next, changed: true };
+}
+
+// Keep a program's planned sets/reps/target weight in sync with what was
+// actually logged in the session, so the Program tab shows current numbers
+// instead of whatever was typed in when the program was first built.
+// Only touches the single exercise slot that was logged today (matched by
+// its program-instance id, inside today's day) — every other day, exercise,
+// and program is left completely untouched.
+function syncProgramTarget(program, dayKey, inst) {
+  if (!program || !inst) return program;
+  const day = program.days?.[dayKey];
+  if (!day || day.type !== "workout") return program;
+  const idx = (day.exercises || []).findIndex((e) => e.id === inst.id);
+  if (idx === -1) return program;
+  const pex = day.exercises[idx];
+  const nextPex = {
+    ...pex,
+    sets: inst.sets ?? pex.sets,
+    reps: inst.reps ?? pex.reps,
+    targetWeight: inst.weight ?? pex.targetWeight,
+    targetAddedWeight: inst.addedWeight !== undefined ? inst.addedWeight : pex.targetAddedWeight,
+  };
+  const unchanged =
+    nextPex.sets === pex.sets &&
+    nextPex.reps === pex.reps &&
+    nextPex.targetWeight === pex.targetWeight &&
+    nextPex.targetAddedWeight === pex.targetAddedWeight;
+  if (unchanged) return program;
+  const exercises = [...day.exercises];
+  exercises[idx] = nextPex;
+  return { ...program, days: { ...program.days, [dayKey]: { ...day, exercises } } };
+}
+
 export default function App() {
   const [state, setState] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -3620,6 +4085,60 @@ export default function App() {
     persist({ ...state, programs, members });
   };
 
+  // Copy another member's program into my own program list. The day/exercise
+  // structure is cloned as-is, but for any exercise I already have somewhere in
+  // one of my own programs, my own sets/reps/target weight are kept instead of
+  // theirs — so copying a crew-mate's program doesn't overwrite numbers I've
+  // already dialed in for exercises we share.
+  const handleCopyProgramFromMember = (programId) => {
+    const src = state.programs[programId];
+    const meMember = state.members[session.userId];
+    if (!src || !meMember) return;
+
+    const myExerciseData = {};
+    Object.values(state.programs)
+      .filter((p) => p.ownerId === meMember.id)
+      .forEach((p) => {
+        DAY_ORDER.forEach((d) => {
+          const sched = p.days?.[d];
+          if (sched?.type !== "workout") return;
+          (sched.exercises || []).forEach((pex) => {
+            if (!myExerciseData[pex.exerciseId]) {
+              myExerciseData[pex.exerciseId] = { sets: pex.sets, reps: pex.reps, targetWeight: pex.targetWeight, targetAddedWeight: pex.targetAddedWeight };
+            }
+          });
+        });
+      });
+
+    const days = {};
+    DAY_ORDER.forEach((d) => {
+      const sched = src.days?.[d];
+      if (sched?.type === "workout") {
+        days[d] = {
+          type: "workout",
+          exercises: (sched.exercises || []).map((pex) => {
+            const mine = myExerciseData[pex.exerciseId];
+            return mine ? { ...pex, sets: mine.sets, reps: mine.reps, targetWeight: mine.targetWeight, targetAddedWeight: mine.targetAddedWeight } : { ...pex };
+          }),
+        };
+      } else {
+        days[d] = { type: "rest", exercises: [] };
+      }
+    });
+
+    const sourceMember = state.members[src.ownerId];
+    const clone = {
+      id: uid("prog"),
+      ownerId: meMember.id,
+      name: sourceMember ? `${src.name} (from ${sourceMember.name})` : `${src.name} (Copy)`,
+      description: src.description,
+      active: false,
+      days,
+    };
+    persist({ ...state, programs: { ...state.programs, [clone.id]: clone } });
+    showToast("Program copied — your existing numbers were kept", "📋");
+  };
+
   const handleAddCustomExercise = (payload) => {
     const ex = newCustomExercise({ ...payload, createdBy: session.userId });
     persist({ ...state, customExercises: { ...state.customExercises, [ex.id]: ex } });
@@ -3656,7 +4175,9 @@ export default function App() {
     const before = m.unlocked || [];
     const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
     const { next, xpGain, allDone } = completeExerciseOnMember(m, finalizedInst, allInstances, program);
-    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    const updatedProgram = syncProgramTarget(program, todayDayKey(), finalizedInst);
+    const programs = updatedProgram && updatedProgram !== program ? { ...state.programs, [updatedProgram.id]: updatedProgram } : state.programs;
+    persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
     if (allDone && finalizedInst.isPR) showToast(`Workout complete + new PR! +${xpGain} XP`, "🏆");
     else if (finalizedInst.isPR) showToast(`New personal record! +${xpGain} XP`, "🏆");
     else if (allDone) showToast(`Workout complete! +${xpGain} XP`, "🎉");
@@ -3701,7 +4222,11 @@ export default function App() {
     next.level = levelInfo(next.xp).level;
     next.unlocked = recomputeAchievements(next);
 
-    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
+    const updatedProgram = syncProgramTarget(program, todayDayKey(), updatedInst);
+    const programs = updatedProgram && updatedProgram !== program ? { ...state.programs, [updatedProgram.id]: updatedProgram } : state.programs;
+
+    persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
 
     if (prDelta > 0) showToast("New personal record! +10 XP", "🏆");
     else if (prDelta < 0) showToast("Edit saved — no longer a PR", "✏️");
@@ -3711,6 +4236,36 @@ export default function App() {
       const a = ACHIEVEMENTS.find((x) => x.id === id);
       if (a) setTimeout(() => showToast(`${a.name} unlocked!`, a.icon), 1700 + i * 1800);
     });
+  };
+
+  // Log or edit an exercise's numbers for any date from the calendar's Day
+  // Detail page — past sessions included. Isolated from the Today-page flow
+  // above: no streak changes, no program-target syncing, so it can't ripple
+  // into anything else in the app.
+  const handleEditWorklogForDate = (iso, exerciseId, patch) => {
+    const m = state.members[session.userId];
+    const before = m.unlocked || [];
+    const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
+    const sched = program?.days?.[dayKeyForISO(iso)];
+    const { next, newIsPR, workoutsDelta } = upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched);
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    if (newIsPR) showToast("New personal record!", "🏆");
+    else if (workoutsDelta > 0) showToast("Session marked complete", "🎉");
+    else showToast("Log saved", "✏️");
+    const newly = next.unlocked.filter((id) => !before.includes(id));
+    newly.forEach((id, i) => {
+      const a = ACHIEVEMENTS.find((x) => x.id === id);
+      if (a) setTimeout(() => showToast(`${a.name} unlocked!`, a.icon), 1700 + i * 1800);
+    });
+  };
+
+  // Revert a logged exercise on any date back to "not logged".
+  const handleClearWorklogForDate = (iso, exerciseId) => {
+    const m = state.members[session.userId];
+    const { next, changed } = clearWorklogEntryForDate(m, iso, exerciseId);
+    if (!changed) return;
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    showToast("Log cleared", "🗑️");
   };
 
   const handleSaveNote = (exerciseId_, text) => {
@@ -3781,13 +4336,15 @@ export default function App() {
   if (exerciseId) {
     main = <ExerciseDetailPage exerciseId={exerciseId} me={me} onBack={() => setExerciseId(null)} onSaveNote={handleSaveNote} onSaveInstructions={handleSaveCustomInstructions} />;
   } else if (memberProfileId && state.members[memberProfileId]) {
-    main = <MemberProfilePage member={state.members[memberProfileId]} me={me} programs={state.programs} onBack={() => setMemberProfileId(null)} onRemove={handleRemoveMember} />;
+    main = <MemberProfilePage member={state.members[memberProfileId]} me={me} programs={state.programs} onBack={() => setMemberProfileId(null)} onRemove={handleRemoveMember} onCopyProgram={handleCopyProgramFromMember} />;
   } else if (dayDetailISO) {
     main = (
       <DayDetailPage
         iso={dayDetailISO} me={me} programs={state.programs}
         onBack={() => setDayDetailISO(null)} openExercise={setExerciseId}
         goToToday={() => handleGoTo("today")}
+        onEditEntry={handleEditWorklogForDate}
+        onClearEntry={handleClearWorklogForDate}
       />
     );
   } else {
