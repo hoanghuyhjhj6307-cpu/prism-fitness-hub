@@ -2166,20 +2166,18 @@ function ExerciseDetailPage({ exerciseId, me, onBack, onSaveNote, onSaveInstruct
       </div>
 
       <Card className="p-5">
-        <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-          <SectionHeading eyebrow="Trend" title="Progress" />
-          <div className="flex flex-wrap items-center gap-3">
-            <RangeChips range={range} onChange={setRange} />
-            <div className="flex gap-2">
-              {["weight", "volume", "reps"].map((m) => <Chip key={m} active={metric === m} onClick={() => setMetric(m)}>{m[0].toUpperCase() + m.slice(1)}</Chip>)}
-            </div>
+        <SectionHeading eyebrow="Trend" title="Progress" />
+        <div className="flex items-center justify-between flex-wrap gap-2 mt-3 mb-4">
+          <RangeChips range={range} onChange={setRange} />
+          <div className="flex gap-2">
+            {["weight", "volume", "reps"].map((m) => <Chip key={m} active={metric === m} onClick={() => setMetric(m)}>{m[0].toUpperCase() + m.slice(1)}</Chip>)}
           </div>
         </div>
         <ExerciseChart hist={rangedHist} metric={metric} />
       </Card>
 
       <Card className="p-5">
-        <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <SectionHeading eyebrow="History" title="Previous sessions" />
           <RangeChips range={range} onChange={setRange} />
         </div>
@@ -2256,20 +2254,20 @@ function MemberExerciseModal({ exerciseId, member, onClose }) {
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
+            <div className="flex items-center justify-between flex-wrap gap-3">
               <SectionHeading eyebrow="Trend" title="Progress" />
-              <div className="flex flex-wrap items-center gap-3">
-                <RangeChips range={range} onChange={setRange} />
-                <div className="flex gap-2">
-                  {["weight", "volume", "reps"].map((m) => <Chip key={m} active={metric === m} onClick={() => setMetric(m)}>{m[0].toUpperCase() + m.slice(1)}</Chip>)}
-                </div>
+            </div>
+            <div className="flex items-center justify-between flex-wrap gap-2 mt-3 mb-3">
+              <RangeChips range={range} onChange={setRange} />
+              <div className="flex gap-2">
+                {["weight", "volume", "reps"].map((m) => <Chip key={m} active={metric === m} onClick={() => setMetric(m)}>{m[0].toUpperCase() + m.slice(1)}</Chip>)}
               </div>
             </div>
             <ExerciseChart hist={rangedHist} metric={metric} />
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
               <SectionHeading eyebrow="History" title="Previous sessions" />
               <RangeChips range={range} onChange={setRange} />
             </div>
