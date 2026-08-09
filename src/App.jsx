@@ -6,7 +6,7 @@ import {
   Play, Camera, TrendingUp, Clock, Target, GripVertical, Menu, ShieldCheck,
   LogOut, ArrowLeft, BarChart3, Calendar, Search, Sparkles, Zap, Download,
   Loader2, Save, RefreshCw, UserCheck, UserX, ListChecks,
-  Activity, Minus, UtensilsCrossed, Footprints, Scale, Info
+  Activity, Minus, UtensilsCrossed, Footprints, Scale, Info, Wheat, Droplet
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -1625,7 +1625,7 @@ function StatBlock({ icon, label, value, accent = "text-white" }) {
       <div className="w-9 h-9 rounded-xl bg-white/5 flex items-center justify-center shrink-0">{icon}</div>
       <div className="min-w-0">
         <div className={`text-lg font-bold leading-tight ${accent}`}>{value}</div>
-        <div className="text-[11px] text-slate-400 truncate">{label}</div>
+        <div className="text-[11px] text-slate-400 leading-snug">{label}</div>
       </div>
     </div>
   );
@@ -4801,8 +4801,15 @@ function SourceBadge({ source }) {
 // doesn't turn red the way overshooting calories does — going over a single
 // macro (protein especially) isn't the problem overshooting total calories
 // is, so this only communicates progress, never "you did something wrong".
-function MacroBar({ label, grams, targetGrams, color }) {
+function MacroBar({ label, grams, targetGrams, color, barOnly = false }) {
   const pct = targetGrams > 0 ? clamp((grams / targetGrams) * 100, 0, 100) : 0;
+  if (barOnly) {
+    return (
+      <div className="h-1.5 rounded-full bg-white/5 overflow-hidden" role="progressbar" aria-label={`${label} progress`} aria-valuenow={grams} aria-valuemax={targetGrams}>
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: color }} />
+      </div>
+    );
+  }
   return (
     <div className="flex-1 min-w-[90px]">
       <div className="flex items-baseline justify-between mb-1">
@@ -4812,6 +4819,34 @@ function MacroBar({ label, grams, targetGrams, color }) {
       <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
         <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: color }} />
       </div>
+    </div>
+  );
+}
+
+// Same target/consumed/remaining pattern as the calorie StatBlocks above, but
+// for a single macro (protein/carbs/fat) — so every macro gets exactly the
+// same at-a-glance treatment calories already had, not just protein. Grams
+// are always shown (never hidden behind a "do we have data" gate) since
+// missing macro data on some entries just means "counted as 0g from that
+// entry", the same way missing kcal never happens but *would* just be 0 —
+// consistent with how the calorie ring above already works.
+function MacroTargetGroup({ label, icon, color, consumed, target }) {
+  const remaining = target - consumed;
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2.5">
+        <span className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0" style={{ background: `${color}22` }}>{icon}</span>
+        <span className="text-sm font-bold text-white">{label}</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mb-3">
+        <StatBlock icon={<Target size={16} style={{ color }} />} label={`${label} target (est.)`} value={`${target}g`} />
+        <StatBlock icon={<Flame size={16} style={{ color }} />} label="Consumed" value={`${consumed}g`} />
+        <StatBlock
+          icon={<Activity size={16} style={{ color }} />} label={remaining >= 0 ? "Remaining" : "Over target"}
+          value={`${Math.abs(remaining)}g`} accent={remaining < 0 ? "text-rose-300" : "text-white"}
+        />
+      </div>
+      <MacroBar label={label} grams={consumed} targetGrams={target} color={color} barOnly />
     </div>
   );
 }
@@ -4826,12 +4861,14 @@ function DailySummaryCard({ me, iso, entries, target }) {
   const pct = target > 0 ? clamp((consumed / target) * 100, 0, 100) : 0;
   const macros = macrosForDay(me, iso);
   const macroTargets = macroTargetsFor(me);
-  // Macro grams are known for database-sourced entries automatically, and
+  // Grams are known for database-sourced entries automatically, and
   // optionally for estimate/manual entries when a protein amount was entered
-  // for them — show the breakdown once there's at least one entry with real
-  // macro data, rather than confidently displaying "0g" when it's actually
-  // "unknown".
+  // for them. An entry with kcal but no macro info just contributes 0g to
+  // the totals below (same as macrosForDay does) — this note only appears
+  // as a heads-up that the macro totals may be an undercount, not to hide
+  // the numbers the way earlier versions of this card did.
   const hasMacroData = entries.some((e) => e.protein != null || e.carbs != null || e.fat != null);
+  const hasPartialMacroData = entries.length > 0 && !hasMacroData;
 
   return (
     <Card className="p-5 md:p-6">
@@ -4853,23 +4890,22 @@ function DailySummaryCard({ me, iso, entries, target }) {
             icon={<Activity size={16} className="text-emerald-400" />} label={remaining >= 0 ? "Remaining" : "Over target"}
             value={`${Math.abs(remaining)}`} accent={remaining < 0 ? "text-rose-300" : "text-white"}
           />
-          <StatBlock icon={<Zap size={16} className="text-pink-400" />} label="Protein today" value={`${Math.round(macros.protein)}g`} accent={macros.protein >= macroTargets.proteinG ? "text-emerald-300" : "text-white"} />
           <StatBlock icon={<Footprints size={16} className="text-sky-400" />} label="Steps" value={(activity.steps || 0).toLocaleString()} />
           <StatBlock icon={<Dumbbell size={16} className="text-amber-400" />} label="Workout" value={workout.completed ? (workout.minutes ? `${workout.minutes} min` : "Done ✓") : "—"} />
           <StatBlock icon={<Scale size={16} className="text-fuchsia-400" />} label="Weight" value={`${weight}kg`} />
         </div>
       </div>
-      {hasMacroData ? (
-        <div className="flex gap-4 flex-wrap mt-5 pt-5 border-t border-white/5">
-          <MacroBar label="Protein" grams={Math.round(macros.protein)} targetGrams={macroTargets.proteinG} color="#f472b6" />
-          <MacroBar label="Carbs" grams={Math.round(macros.carbs)} targetGrams={macroTargets.carbsG} color="#38bdf8" />
-          <MacroBar label="Fat" grams={Math.round(macros.fat)} targetGrams={macroTargets.fatG} color="#fbbf24" />
-        </div>
-      ) : entries.length > 0 ? (
+
+      <div className="flex flex-col gap-5 mt-5 pt-5 border-t border-white/5">
+        <MacroTargetGroup label="Protein" icon={<Zap size={13} className="text-pink-400" />} color="#f472b6" consumed={round1(macros.protein)} target={macroTargets.proteinG} />
+        <MacroTargetGroup label="Carbs" icon={<Wheat size={13} className="text-sky-400" />} color="#38bdf8" consumed={round1(macros.carbs)} target={macroTargets.carbsG} />
+        <MacroTargetGroup label="Fat" icon={<Droplet size={13} className="text-amber-400" />} color="#fbbf24" consumed={round1(macros.fat)} target={macroTargets.fatG} />
+      </div>
+      {hasPartialMacroData && (
         <p className="text-[11px] text-slate-500 mt-4 flex items-center gap-1.5">
-          <Info size={11} className="shrink-0" /> No protein/carb/fat data yet — log a food from the database, or add an estimated protein amount to an estimate/manual entry, to see a macro breakdown.
+          <Info size={11} className="shrink-0" /> Today's entries don't have protein/carb/fat data yet, so the macro totals above read as 0g. Log a food from the database, or add an estimated protein amount to an estimate/manual entry, for a real breakdown.
         </p>
-      ) : null}
+      )}
       {activityKcal > 0 && (
         <p className="text-[11px] text-slate-500 mt-4 flex items-center gap-1.5">
           <Info size={11} className="shrink-0" /> ~{activityKcal} kcal estimated burned from today's steps/workout — not subtracted from your target above.
@@ -5513,7 +5549,7 @@ function BodySettingsCard({ me, onUpdate }) {
         <div className="flex items-center justify-between"><span className="text-sm font-bold text-white">Daily protein target</span><span className="text-lg font-black text-white">{macroTargets.proteinG}g</span></div>
         <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1"><Info size={10} className="shrink-0" /> 1.8g per kg bodyweight is a common strength/physique guideline — not a medical calculation.</p>
       </div>
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-2 flex-wrap mb-5">
         <span className="text-xs text-slate-400">Manual override</span>
         <input
           type="number" min="20" max="400" value={proteinOverrideDraft} onChange={(e) => setProteinOverrideDraft(e.target.value)} placeholder="e.g. 150"
@@ -5524,6 +5560,27 @@ function BodySettingsCard({ me, onUpdate }) {
         {me.proteinTargetOverride != null && (
           <GhostButton onClick={() => { setProteinOverrideDraft(""); onUpdate({ proteinTargetOverride: null }); }} className="!px-3 !py-1.5 text-xs">Clear</GhostButton>
         )}
+      </div>
+
+      {/* Carbs and fat targets are always derived (25% of calories for fat,
+          whatever's left for carbs — see macroTargetsFor) rather than
+          independently overridable, since either one moving on its own would
+          break that "remainder" relationship. Shown read-only so the same
+          calorie/protein math that drives the two numbers above is visible
+          for these too, not just quietly used behind the scenes. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="rounded-2xl bg-white/[0.03] border border-white/5 p-4 flex flex-col gap-1.5">
+          <div className="flex items-center justify-between text-sm"><span className="text-slate-400">Fat (25% of calorie target)</span><span className="text-white font-semibold">{Math.round(target * 0.25)} kcal</span></div>
+          <div className="h-px bg-white/10 my-1" />
+          <div className="flex items-center justify-between"><span className="text-sm font-bold text-white">Daily fat target</span><span className="text-lg font-black text-white">{macroTargets.fatG}g</span></div>
+          <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1"><Info size={10} className="shrink-0" /> Fixed at 25% of calories, then converted at 9 kcal/g — not independently adjustable.</p>
+        </div>
+        <div className="rounded-2xl bg-white/[0.03] border border-white/5 p-4 flex flex-col gap-1.5">
+          <div className="flex items-center justify-between text-sm"><span className="text-slate-400">Carbs (remaining calories)</span><span className="text-white font-semibold">{Math.max(0, target - macroTargets.proteinG * 4 - Math.round(target * 0.25))} kcal</span></div>
+          <div className="h-px bg-white/10 my-1" />
+          <div className="flex items-center justify-between"><span className="text-sm font-bold text-white">Daily carbs target</span><span className="text-lg font-black text-white">{macroTargets.carbsG}g</span></div>
+          <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1"><Info size={10} className="shrink-0" /> Whatever's left after protein + fat, converted at 4 kcal/g. Adjusting calories or protein above moves this.</p>
+        </div>
       </div>
     </Card>
   );
@@ -5600,9 +5657,11 @@ function DietHistorySection({ me }) {
           </div>
         }
       />
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 mb-6">
+      <div className="grid grid-cols-2 gap-2.5 mb-2.5">
         <StatBlock icon={<Flame size={16} className="text-orange-400" />} label={`Avg calories (${stats.daysWithFood}/${stats.totalDays}d logged)`} value={`${stats.avgKcal}`} />
         <StatBlock icon={<Zap size={16} className="text-pink-400" />} label={`Avg protein (${stats.daysWithProtein}/${stats.totalDays}d logged)`} value={`${stats.avgMacros.protein}g`} />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mb-6">
         <StatBlock icon={<Footprints size={16} className="text-sky-400" />} label={`Avg steps (${stats.daysWithSteps}/${stats.totalDays}d logged)`} value={stats.avgSteps.toLocaleString()} />
         <StatBlock icon={<Dumbbell size={16} className="text-amber-400" />} label={`Avg workout (${stats.daysWithMinutes}/${stats.totalDays}d logged)`} value={`${stats.avgMinutes} min`} />
         <StatBlock
