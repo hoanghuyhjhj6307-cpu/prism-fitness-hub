@@ -6,7 +6,7 @@ import {
   Play, Camera, TrendingUp, Clock, Target, GripVertical, Menu, ShieldCheck,
   LogOut, ArrowLeft, BarChart3, Calendar, Search, Sparkles, Zap, Download,
   Loader2, Save, RefreshCw, UserCheck, UserX, ListChecks,
-  Activity, Minus
+  Activity, Minus, UtensilsCrossed, Footprints, Scale, Info
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -377,6 +377,19 @@ function newCustomExercise({ name, muscle, secondary, icon, loadType, bwPercent,
 const DEFAULT_BODYWEIGHT_KG = 70;
 const DEFAULT_HEIGHT_CM = 170;
 const DEFAULT_AGE = 25;
+const DEFAULT_SEX = "male";
+const DEFAULT_ACTIVITY_LEVEL = "moderate";
+// Standard Mifflin-St Jeor activity multipliers, used to turn BMR into an
+// estimated daily calorie need (TDEE) for the Diet tab. These are the same
+// widely-cited coaching estimates used across most calorie-tracking apps —
+// not a lab measurement of any one person's true energy expenditure.
+const ACTIVITY_LEVELS = [
+  { id: "sedentary", label: "Sedentary", desc: "Little or no exercise", mult: 1.2 },
+  { id: "light", label: "Light", desc: "Light exercise 1–3 days/week", mult: 1.375 },
+  { id: "moderate", label: "Moderate", desc: "Moderate exercise 3–5 days/week", mult: 1.55 },
+  { id: "active", label: "Active", desc: "Hard exercise 6–7 days/week", mult: 1.725 },
+  { id: "very_active", label: "Very active", desc: "Very hard training + physical job", mult: 1.9 },
+];
 function computeBodyweightLoad(ex, addedWeight, bodyweightKg) {
   const bw = Number(bodyweightKg) || DEFAULT_BODYWEIGHT_KG;
   const pct = (ex && Number(ex.bwPercent)) || 100;
@@ -624,6 +637,123 @@ const ACHIEVEMENTS = [
   { id: "ach_heavy200", name: "Two Plates Plus", desc: "Log 200 kg or more in a single set of any exercise", icon: "🏔️", check: (s) => maxWeightAny(s) >= 200 },
 ];
 
+/* ============================ Diet — data & constants ====================== */
+// Diet is an add-on system alongside the workout/program/member system above.
+// It reads existing member body data (bodyweightKg/heightCm/age) rather than
+// duplicating it — see newMember()/normalizeState() further down, which only
+// add the *new* fields Diet needs (sex, activityLevel, weightHistory, food/activity
+// logs) onto the same member record.
+
+const MEAL_TYPES = [
+  { id: "breakfast", label: "Breakfast", icon: "🌅" },
+  { id: "lunch", label: "Lunch", icon: "🍚" },
+  { id: "dinner", label: "Dinner", icon: "🌙" },
+  { id: "snack", label: "Snack", icon: "🍎" },
+];
+const FOOD_CATEGORIES = ["Carbs", "Protein", "Dairy", "Fruits", "Vegetables", "Snacks", "Drinks"];
+// Every unit the app supports for logging/creating a food (spec §10).
+const FOOD_UNITS = ["g", "kg", "ml", "L", "serving", "piece", "slice", "bowl", "cup"];
+
+// Every food stores nutrition per a fixed base quantity (baseAmount + baseUnit).
+// Actual calories for a log entry are computed by scaling from that base — see
+// computeFoodStats() below — so the user never has to do the math themselves.
+// "piece"/"slice"/"serving"/"cup"/"bowl" foods use baseAmount:1 (a count), while
+// "g"/"ml" foods can be scaled to any gram/ml amount (and toggled to kg/L).
+const FOOD_LIBRARY = [
+  // ---- Carbs ----
+  { id: "f_rice_white", name: "White rice (cooked)", category: "Carbs", icon: "🍚", baseUnit: "g", baseAmount: 100, kcal: 130, protein: 2.7, carbs: 28, fat: 0.3 },
+  { id: "f_rice_brown", name: "Brown rice (cooked)", category: "Carbs", icon: "🍚", baseUnit: "g", baseAmount: 100, kcal: 112, protein: 2.3, carbs: 24, fat: 0.9 },
+  { id: "f_bread_white", name: "White bread", category: "Carbs", icon: "🍞", baseUnit: "slice", baseAmount: 1, kcal: 80, protein: 2.7, carbs: 15, fat: 1 },
+  { id: "f_bread_wheat", name: "Whole wheat bread", category: "Carbs", icon: "🍞", baseUnit: "slice", baseAmount: 1, kcal: 70, protein: 3.6, carbs: 12, fat: 1 },
+  { id: "f_oats", name: "Oats (dry)", category: "Carbs", icon: "🥣", baseUnit: "g", baseAmount: 100, kcal: 389, protein: 16.9, carbs: 66, fat: 6.9 },
+  { id: "f_pasta", name: "Pasta (cooked)", category: "Carbs", icon: "🍝", baseUnit: "g", baseAmount: 100, kcal: 131, protein: 5, carbs: 25, fat: 1.1 },
+  { id: "f_potato", name: "Potato (boiled)", category: "Carbs", icon: "🥔", baseUnit: "g", baseAmount: 100, kcal: 87, protein: 1.9, carbs: 20, fat: 0.1 },
+  { id: "f_sweet_potato", name: "Sweet potato (boiled)", category: "Carbs", icon: "🍠", baseUnit: "g", baseAmount: 100, kcal: 90, protein: 2, carbs: 21, fat: 0.1 },
+  { id: "f_noodles_egg", name: "Egg noodles (cooked)", category: "Carbs", icon: "🍜", baseUnit: "g", baseAmount: 100, kcal: 138, protein: 4.5, carbs: 25, fat: 2.1 },
+  { id: "f_noodles_rice", name: "Rice noodles / phở (cooked)", category: "Carbs", icon: "🍜", baseUnit: "g", baseAmount: 100, kcal: 109, protein: 0.9, carbs: 25, fat: 0.2 },
+  { id: "f_quinoa", name: "Quinoa (cooked)", category: "Carbs", icon: "🌾", baseUnit: "g", baseAmount: 100, kcal: 120, protein: 4.4, carbs: 21, fat: 1.9 },
+  { id: "f_corn", name: "Corn (boiled)", category: "Carbs", icon: "🌽", baseUnit: "g", baseAmount: 100, kcal: 96, protein: 3.4, carbs: 21, fat: 1.5 },
+
+  // ---- Protein ----
+  { id: "f_chicken_breast", name: "Chicken breast (cooked)", category: "Protein", icon: "🍗", baseUnit: "g", baseAmount: 100, kcal: 165, protein: 31, carbs: 0, fat: 3.6 },
+  { id: "f_chicken_thigh", name: "Chicken thigh (cooked)", category: "Protein", icon: "🍗", baseUnit: "g", baseAmount: 100, kcal: 209, protein: 26, carbs: 0, fat: 11 },
+  { id: "f_beef_lean", name: "Beef, lean (cooked)", category: "Protein", icon: "🥩", baseUnit: "g", baseAmount: 100, kcal: 250, protein: 26, carbs: 0, fat: 15 },
+  { id: "f_pork_lean", name: "Pork, lean (cooked)", category: "Protein", icon: "🥩", baseUnit: "g", baseAmount: 100, kcal: 242, protein: 27, carbs: 0, fat: 14 },
+  { id: "f_pork_belly", name: "Pork belly (cooked)", category: "Protein", icon: "🥓", baseUnit: "g", baseAmount: 100, kcal: 518, protein: 9, carbs: 0, fat: 53 },
+  { id: "f_fish_white", name: "White fish (cooked)", category: "Protein", icon: "🐟", baseUnit: "g", baseAmount: 100, kcal: 128, protein: 26, carbs: 0, fat: 2.7 },
+  { id: "f_salmon", name: "Salmon (cooked)", category: "Protein", icon: "🐟", baseUnit: "g", baseAmount: 100, kcal: 208, protein: 20, carbs: 0, fat: 13 },
+  { id: "f_tuna_canned", name: "Tuna (canned in water)", category: "Protein", icon: "🐟", baseUnit: "g", baseAmount: 100, kcal: 116, protein: 26, carbs: 0, fat: 0.8 },
+  { id: "f_shrimp", name: "Shrimp (cooked)", category: "Protein", icon: "🦐", baseUnit: "g", baseAmount: 100, kcal: 99, protein: 24, carbs: 0.2, fat: 0.3 },
+  { id: "f_egg", name: "Egg, large", category: "Protein", icon: "🥚", baseUnit: "piece", baseAmount: 1, kcal: 70, protein: 6, carbs: 0.4, fat: 5 },
+  { id: "f_tofu", name: "Tofu, firm", category: "Protein", icon: "🧊", baseUnit: "g", baseAmount: 100, kcal: 144, protein: 15, carbs: 3, fat: 9 },
+  { id: "f_tempeh", name: "Tempeh", category: "Protein", icon: "🧊", baseUnit: "g", baseAmount: 100, kcal: 192, protein: 20, carbs: 7.6, fat: 11 },
+
+  // ---- Dairy ----
+  { id: "f_milk_whole", name: "Milk, whole", category: "Dairy", icon: "🥛", baseUnit: "ml", baseAmount: 100, kcal: 61, protein: 3.2, carbs: 4.8, fat: 3.3 },
+  { id: "f_milk_skim", name: "Milk, skim", category: "Dairy", icon: "🥛", baseUnit: "ml", baseAmount: 100, kcal: 35, protein: 3.4, carbs: 5, fat: 0.1 },
+  { id: "f_yogurt", name: "Yogurt, plain", category: "Dairy", icon: "🍦", baseUnit: "g", baseAmount: 100, kcal: 61, protein: 3.5, carbs: 4.7, fat: 3.3 },
+  { id: "f_yogurt_greek", name: "Greek yogurt, plain", category: "Dairy", icon: "🍦", baseUnit: "g", baseAmount: 100, kcal: 59, protein: 10, carbs: 3.6, fat: 0.4 },
+  { id: "f_cheese_cheddar", name: "Cheese, cheddar", category: "Dairy", icon: "🧀", baseUnit: "g", baseAmount: 100, kcal: 403, protein: 25, carbs: 1.3, fat: 33 },
+  { id: "f_cottage_cheese", name: "Cottage cheese", category: "Dairy", icon: "🧀", baseUnit: "g", baseAmount: 100, kcal: 98, protein: 11, carbs: 3.4, fat: 4.3 },
+
+  // ---- Fruits ----
+  { id: "f_banana", name: "Banana", category: "Fruits", icon: "🍌", baseUnit: "piece", baseAmount: 1, kcal: 105, protein: 1.3, carbs: 27, fat: 0.4 },
+  { id: "f_apple", name: "Apple", category: "Fruits", icon: "🍎", baseUnit: "piece", baseAmount: 1, kcal: 95, protein: 0.5, carbs: 25, fat: 0.3 },
+  { id: "f_orange", name: "Orange", category: "Fruits", icon: "🍊", baseUnit: "piece", baseAmount: 1, kcal: 62, protein: 1.2, carbs: 15, fat: 0.2 },
+  { id: "f_mango", name: "Mango", category: "Fruits", icon: "🥭", baseUnit: "g", baseAmount: 100, kcal: 60, protein: 0.8, carbs: 15, fat: 0.4 },
+  { id: "f_watermelon", name: "Watermelon", category: "Fruits", icon: "🍉", baseUnit: "g", baseAmount: 100, kcal: 30, protein: 0.6, carbs: 8, fat: 0.2 },
+  { id: "f_grapes", name: "Grapes", category: "Fruits", icon: "🍇", baseUnit: "g", baseAmount: 100, kcal: 69, protein: 0.7, carbs: 18, fat: 0.2 },
+  { id: "f_pineapple", name: "Pineapple", category: "Fruits", icon: "🍍", baseUnit: "g", baseAmount: 100, kcal: 50, protein: 0.5, carbs: 13, fat: 0.1 },
+  { id: "f_dragonfruit", name: "Dragon fruit", category: "Fruits", icon: "🐉", baseUnit: "g", baseAmount: 100, kcal: 60, protein: 1.2, carbs: 13, fat: 0.4 },
+  { id: "f_papaya", name: "Papaya", category: "Fruits", icon: "🥭", baseUnit: "g", baseAmount: 100, kcal: 43, protein: 0.5, carbs: 11, fat: 0.3 },
+
+  // ---- Vegetables ----
+  { id: "f_broccoli", name: "Broccoli (cooked)", category: "Vegetables", icon: "🥦", baseUnit: "g", baseAmount: 100, kcal: 35, protein: 2.4, carbs: 7, fat: 0.4 },
+  { id: "f_carrot", name: "Carrot", category: "Vegetables", icon: "🥕", baseUnit: "g", baseAmount: 100, kcal: 41, protein: 0.9, carbs: 10, fat: 0.2 },
+  { id: "f_spinach", name: "Spinach (cooked)", category: "Vegetables", icon: "🥬", baseUnit: "g", baseAmount: 100, kcal: 23, protein: 2.9, carbs: 3.6, fat: 0.4 },
+  { id: "f_cucumber", name: "Cucumber", category: "Vegetables", icon: "🥒", baseUnit: "g", baseAmount: 100, kcal: 15, protein: 0.7, carbs: 3.6, fat: 0.1 },
+  { id: "f_tomato", name: "Tomato", category: "Vegetables", icon: "🍅", baseUnit: "g", baseAmount: 100, kcal: 18, protein: 0.9, carbs: 3.9, fat: 0.2 },
+  { id: "f_lettuce", name: "Lettuce", category: "Vegetables", icon: "🥬", baseUnit: "g", baseAmount: 100, kcal: 15, protein: 1.4, carbs: 2.9, fat: 0.2 },
+  { id: "f_cabbage", name: "Cabbage", category: "Vegetables", icon: "🥬", baseUnit: "g", baseAmount: 100, kcal: 25, protein: 1.3, carbs: 5.8, fat: 0.1 },
+  { id: "f_water_spinach", name: "Water spinach (rau muống)", category: "Vegetables", icon: "🥬", baseUnit: "g", baseAmount: 100, kcal: 19, protein: 2.6, carbs: 3.1, fat: 0.2 },
+  { id: "f_green_beans", name: "Green beans", category: "Vegetables", icon: "🫛", baseUnit: "g", baseAmount: 100, kcal: 31, protein: 1.8, carbs: 7, fat: 0.1 },
+
+  // ---- Snacks ----
+  { id: "f_protein_bar", name: "Protein bar", category: "Snacks", icon: "🍫", baseUnit: "piece", baseAmount: 1, kcal: 200, protein: 20, carbs: 22, fat: 7 },
+  { id: "f_mixed_nuts", name: "Mixed nuts", category: "Snacks", icon: "🥜", baseUnit: "g", baseAmount: 100, kcal: 607, protein: 20, carbs: 21, fat: 54 },
+  { id: "f_chocolate_dark", name: "Dark chocolate", category: "Snacks", icon: "🍫", baseUnit: "g", baseAmount: 100, kcal: 546, protein: 7.8, carbs: 46, fat: 31 },
+  { id: "f_chips", name: "Potato chips", category: "Snacks", icon: "🍟", baseUnit: "g", baseAmount: 100, kcal: 536, protein: 7, carbs: 53, fat: 35 },
+  { id: "f_popcorn", name: "Popcorn (air-popped)", category: "Snacks", icon: "🍿", baseUnit: "g", baseAmount: 100, kcal: 387, protein: 13, carbs: 78, fat: 4.5 },
+  { id: "f_instant_noodles", name: "Instant noodles (1 pack)", category: "Snacks", icon: "🍜", baseUnit: "serving", baseAmount: 1, kcal: 380, protein: 7, carbs: 51, fat: 17 },
+
+  // ---- Drinks ----
+  { id: "f_coffee_black", name: "Coffee, black", category: "Drinks", icon: "☕", baseUnit: "cup", baseAmount: 1, kcal: 2, protein: 0.3, carbs: 0, fat: 0 },
+  { id: "f_coffee_milk_sugar", name: "Coffee with milk & sugar (cà phê sữa)", category: "Drinks", icon: "☕", baseUnit: "cup", baseAmount: 1, kcal: 120, protein: 3, carbs: 18, fat: 4 },
+  { id: "f_soft_drink", name: "Soft drink / soda", category: "Drinks", icon: "🥤", baseUnit: "ml", baseAmount: 100, kcal: 42, protein: 0, carbs: 10.6, fat: 0 },
+  { id: "f_orange_juice", name: "Orange juice", category: "Drinks", icon: "🧃", baseUnit: "ml", baseAmount: 100, kcal: 45, protein: 0.7, carbs: 10.4, fat: 0.2 },
+  { id: "f_beer", name: "Beer", category: "Drinks", icon: "🍺", baseUnit: "ml", baseAmount: 100, kcal: 43, protein: 0.5, carbs: 3.6, fat: 0 },
+  { id: "f_bubble_tea", name: "Bubble tea", category: "Drinks", icon: "🧋", baseUnit: "cup", baseAmount: 1, kcal: 350, protein: 2, carbs: 60, fat: 10 },
+  { id: "f_coconut_water", name: "Coconut water", category: "Drinks", icon: "🥥", baseUnit: "ml", baseAmount: 100, kcal: 19, protein: 0.2, carbs: 3.7, fat: 0.2 },
+];
+
+// "Estimate a meal" mode for restaurant/eating-out food, per spec — these are
+// intentionally ranges, never a false-precision single number. Anything the
+// user types that doesn't match falls back to a fully manual estimate.
+const RESTAURANT_ESTIMATES = [
+  { id: "r_pho", name: "Phở (bowl)", kcalLow: 350, kcalHigh: 500 },
+  { id: "r_bun_cha", name: "Bún chả", kcalLow: 600, kcalHigh: 750 },
+  { id: "r_com_tam", name: "Cơm tấm sườn", kcalLow: 650, kcalHigh: 850 },
+  { id: "r_banh_mi", name: "Bánh mì", kcalLow: 350, kcalHigh: 550 },
+  { id: "r_bun_bo_hue", name: "Bún bò Huế", kcalLow: 450, kcalHigh: 650 },
+  { id: "r_goi_cuon", name: "Gỏi cuốn (2 rolls)", kcalLow: 150, kcalHigh: 250 },
+  { id: "r_chicken_rice", name: "Chicken rice (cơm gà)", kcalLow: 500, kcalHigh: 700 },
+  { id: "r_fried_rice", name: "Fried rice", kcalLow: 500, kcalHigh: 700 },
+  { id: "r_noodle_soup", name: "Noodle soup (general)", kcalLow: 350, kcalHigh: 550 },
+  { id: "r_burger_fries", name: "Burger + fries", kcalLow: 650, kcalHigh: 900 },
+  { id: "r_pizza_slice", name: "Pizza (1 slice)", kcalLow: 250, kcalHigh: 400 },
+  { id: "r_salad_protein", name: "Salad bowl with protein", kcalLow: 350, kcalHigh: 550 },
+];
+
 /* -------------------------------- Utils --------------------------------- */
 function uid(prefix) {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -704,6 +834,13 @@ export function newMember({ id, name, role, status, avatarUrl }) {
     history: {},      // { [exerciseId]: [{date, sets, reps, weight, volume}] }
     worklogs: {},      // { [iso]: { restDay:bool, exercises: {[exerciseId]:{sets,reps,weight,done}}, completedAt } }
     exerciseNotes: {}, // { [exerciseId]: text }
+    // ---- Diet add-on fields (extend this same member record, no second object) ----
+    sex: DEFAULT_SEX,
+    activityLevel: DEFAULT_ACTIVITY_LEVEL,
+    weightHistory: [],        // [{date, kg}] — bodyweightKg above always mirrors the latest entry
+    calorieTargetOverride: null,
+    foodLog: {},              // { [iso]: [ {id, meal, source, foodId, name, amount, unit, kcal, protein, carbs, fat, note} ] }
+    activityLog: {},          // { [iso]: { steps, workoutMinutes } } — workout *completion* itself still comes from worklogs
   };
 }
 function recomputeAchievements(m) {
@@ -804,9 +941,14 @@ const STATE_KEY = "KBL_state_v1";
 function normalizeState(s) {
   if (!s) return s;
   const members = Object.fromEntries(
-    Object.entries(s.members || {}).map(([id, m]) => [id, { bodyweightKg: DEFAULT_BODYWEIGHT_KG, heightCm: DEFAULT_HEIGHT_CM, age: DEFAULT_AGE, avatarUrl: null, ...m }])
+    Object.entries(s.members || {}).map(([id, m]) => [id, {
+      bodyweightKg: DEFAULT_BODYWEIGHT_KG, heightCm: DEFAULT_HEIGHT_CM, age: DEFAULT_AGE, avatarUrl: null,
+      sex: DEFAULT_SEX, activityLevel: DEFAULT_ACTIVITY_LEVEL, weightHistory: [], calorieTargetOverride: null,
+      foodLog: {}, activityLog: {},
+      ...m,
+    }])
   );
-  return { ...s, members, customExercises: s.customExercises || {}, programs: s.programs || {} };
+  return { ...s, members, customExercises: s.customExercises || {}, customFoods: s.customFoods || {}, programs: s.programs || {} };
 }
 // Shared app state lives in a single JSONB row (id=1) in the `app_state` table.
 // Per-user photo galleries live one-row-per-user in `user_photos`, keyed by the
@@ -878,9 +1020,204 @@ async function storageSavePhotos(userId, photos) {
 // empty on first run — pre-seeding fake members here would permanently steal
 // the admin slot from whoever actually deploys this for their crew.
 function emptyAppState() {
-  return { members: {}, programs: {}, customExercises: {}, createdAt: todayISO() };
+  return { members: {}, programs: {}, customExercises: {}, customFoods: {}, createdAt: todayISO() };
 }
 
+/* ================================ Diet — logic ============================= */
+// All of this reads/writes the SAME member record as the rest of the app
+// (state.members[id]) — there is no second, parallel "diet user" object.
+
+function activityLevelInfo(id) {
+  return ACTIVITY_LEVELS.find((a) => a.id === id) || ACTIVITY_LEVELS.find((a) => a.id === DEFAULT_ACTIVITY_LEVEL);
+}
+// Mifflin-St Jeor — the standard, widely-used estimate. Like any BMR formula,
+// this is an estimate, not a medical measurement (see calorieTargetFor below).
+function calcBMR({ sex, weightKg, heightCm, age }) {
+  const w = Number(weightKg) || DEFAULT_BODYWEIGHT_KG;
+  const h = Number(heightCm) || DEFAULT_HEIGHT_CM;
+  const a = Number(age) || DEFAULT_AGE;
+  const base = 10 * w + 6.25 * h - 5 * a;
+  return Math.round(sex === "female" ? base - 161 : base + 5);
+}
+function calcTDEE(bmr, activityLevel) {
+  return Math.round(bmr * activityLevelInfo(activityLevel).mult);
+}
+// The member's current weight is simply the most recent entry in their weight
+// history (weightHistory is kept sorted ascending by date — see upsertWeightEntry).
+// Falls back to bodyweightKg for members who haven't logged a dated weight yet,
+// so this never regresses behavior for the existing bodyweight field.
+function currentWeightKg(member) {
+  const hist = member?.weightHistory || [];
+  if (hist.length === 0) return member?.bodyweightKg ?? DEFAULT_BODYWEIGHT_KG;
+  return hist[hist.length - 1].kg;
+}
+// For a past date, "weight that day" is the most recent logged entry on or
+// before that date (falling back to the earliest entry, then current weight)
+// — so browsing history shows what was true then, not today's number.
+function weightOnDate(member, iso) {
+  const hist = member?.weightHistory || [];
+  if (hist.length === 0) return member?.bodyweightKg ?? DEFAULT_BODYWEIGHT_KG;
+  const onOrBefore = [...hist].filter((h) => h.date <= iso).sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+  return onOrBefore ? onOrBefore.kg : hist[0].kg;
+}
+// A manual override always wins (spec §13) but is otherwise derived live from
+// body data — so changing weight/height/age/activity level updates the target
+// automatically, with no separate value to keep in sync.
+function calorieTargetFor(member) {
+  if (member?.calorieTargetOverride != null) return Math.round(member.calorieTargetOverride);
+  const bmr = calcBMR({
+    sex: member?.sex || DEFAULT_SEX,
+    weightKg: currentWeightKg(member),
+    heightCm: member?.heightCm ?? DEFAULT_HEIGHT_CM,
+    age: member?.age ?? DEFAULT_AGE,
+  });
+  return calcTDEE(bmr, member?.activityLevel || DEFAULT_ACTIVITY_LEVEL);
+}
+// One dated entry per day — logging a new weight for a date that's already
+// logged corrects that day rather than creating a duplicate history row.
+function upsertWeightEntry(history, iso, kg) {
+  const list = (history || []).filter((h) => h.date !== iso);
+  list.push({ date: iso, kg: Math.round(Number(kg) * 10) / 10 });
+  list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return list;
+}
+function allFoods(customFoods = {}) {
+  return [...FOOD_LIBRARY, ...Object.values(customFoods)];
+}
+function getFood(id, customFoods = {}) {
+  return customFoods[id] || FOOD_LIBRARY.find((f) => f.id === id) || null;
+}
+// g<->kg and ml<->L are the only unit conversions; every other baseUnit
+// (piece/slice/serving/cup/bowl) is a plain count with no conversion.
+function foodUnitChoices(food) {
+  if (!food) return ["g"];
+  if (food.baseUnit === "g") return ["g", "kg"];
+  if (food.baseUnit === "ml") return ["ml", "L"];
+  return [food.baseUnit];
+}
+function toBaseUnitAmount(food, amount, unit) {
+  const amt = Number(amount) || 0;
+  if (!food || unit === food.baseUnit) return amt;
+  if (food.baseUnit === "g" && unit === "kg") return amt * 1000;
+  if (food.baseUnit === "ml" && unit === "L") return amt * 1000;
+  return amt;
+}
+// The single place calories-from-a-database-food get computed, so the user
+// never has to do the arithmetic (spec §8/§9).
+function computeFoodStats(food, amount, unit) {
+  if (!food) return { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+  const baseAmt = toBaseUnitAmount(food, amount, unit || food.baseUnit);
+  const factor = food.baseAmount ? baseAmt / food.baseAmount : 0;
+  return {
+    kcal: Math.round((food.kcal || 0) * factor),
+    protein: round1((food.protein || 0) * factor),
+    carbs: round1((food.carbs || 0) * factor),
+    fat: round1((food.fat || 0) * factor),
+  };
+}
+function newCustomFood({ name, category, icon, baseUnit, baseAmount, kcal, protein, carbs, fat, createdBy }) {
+  return {
+    id: uid("food"), custom: true, createdBy,
+    name: (name || "").trim() || "Custom food",
+    category: category || "Snacks",
+    icon: icon || "🍽️",
+    baseUnit: baseUnit || "g",
+    baseAmount: Number(baseAmount) || 100,
+    kcal: Number(kcal) || 0,
+    protein: Number(protein) || 0,
+    carbs: Number(carbs) || 0,
+    fat: Number(fat) || 0,
+  };
+}
+function newFoodEntry({ meal, source, foodId, name, amount, unit, kcal, protein, carbs, fat, note }) {
+  return {
+    id: uid("fe"),
+    meal: meal || "snack",
+    source: source || "database", // "database" | "estimate" | "manual"
+    foodId: foodId || null,
+    name: name || "",
+    amount: Number(amount) || 0,
+    unit: unit || "g",
+    kcal: Math.round(Number(kcal) || 0),
+    protein: protein != null ? round1(Number(protein)) : null,
+    carbs: carbs != null ? round1(Number(carbs)) : null,
+    fat: fat != null ? round1(Number(fat)) : null,
+    note: note || "",
+  };
+}
+// Steps + logged workout minutes for a date; workout *completion* itself is
+// never duplicated here — see workoutSummaryForDay() below, which reads the
+// existing worklogs directly.
+function activityForDay(member, iso) {
+  return member?.activityLog?.[iso] || { steps: 0, workoutMinutes: 0 };
+}
+// Derives "was a workout done, and roughly how long" from the existing worklog
+// system (spec §16/§22) — this is the single source of truth for workout
+// completion; Diet only adds an optional, explicitly-logged duration on top.
+function workoutSummaryForDay(member, iso) {
+  const wl = member?.worklogs?.[iso];
+  const completed = !!wl?.completedAt;
+  const loggedExercises = Object.values(wl?.exercises || {}).filter((e) => e.done).length;
+  const manualMinutes = member?.activityLog?.[iso]?.workoutMinutes || 0;
+  return { completed, loggedExercises, minutes: manualMinutes };
+}
+function foodEntriesForDay(member, iso) {
+  return member?.foodLog?.[iso] || [];
+}
+function totalKcalForDay(member, iso) {
+  return foodEntriesForDay(member, iso).reduce((sum, e) => sum + (Number(e.kcal) || 0), 0);
+}
+function macrosForDay(member, iso) {
+  return foodEntriesForDay(member, iso).reduce(
+    (m, e) => ({ protein: m.protein + (e.protein || 0), carbs: m.carbs + (e.carbs || 0), fat: m.fat + (e.fat || 0) }),
+    { protein: 0, carbs: 0, fat: 0 }
+  );
+}
+// A light, clearly-labeled estimate of calories burned by logged activity —
+// never presented as exact (spec §17/§30).
+function estimatedActivityKcal(member, iso) {
+  const { steps, workoutMinutes } = activityForDay(member, iso);
+  const stepsKcal = (Number(steps) || 0) * 0.04; // ≈ walking energy cost per step, rough estimate
+  const workoutKcal = (Number(workoutMinutes) || 0) * 6; // ≈ moderate resistance training, rough estimate
+  return Math.round(stepsKcal + workoutKcal);
+}
+// Quick-add defaults to whichever meal makes sense right now, so the common
+// case (logging what you just ate) needs zero extra taps.
+function defaultMealForNow() {
+  const h = new Date().getHours();
+  if (h < 11) return "breakfast";
+  if (h < 15) return "lunch";
+  if (h < 21) return "dinner";
+  return "snack";
+}
+function datesInRange(startISO, endISO) {
+  const out = [];
+  let d = startISO, guard = 0;
+  while (d <= endISO && guard < 400) { out.push(d); d = addDaysISO(d, 1); guard++; }
+  return out;
+}
+// Weekly/monthly rollups (spec §18) — every number here is derived live from
+// foodLog/activityLog/weightHistory, never stored separately, so editing a
+// single day's food always updates these on the next render for free.
+function dietStatsForRange(member, startISO, endISO) {
+  const dates = datesInRange(startISO, endISO);
+  const kcalPerDay = dates.map((d) => totalKcalForDay(member, d));
+  const stepsPerDay = dates.map((d) => activityForDay(member, d).steps || 0);
+  const minutesPerDay = dates.map((d) => workoutSummaryForDay(member, d).minutes || 0);
+  const daysWithFood = kcalPerDay.filter((k) => k > 0).length;
+  const totalKcal = kcalPerDay.reduce((a, b) => a + b, 0);
+  const totalSteps = stepsPerDay.reduce((a, b) => a + b, 0);
+  const totalMinutes = minutesPerDay.reduce((a, b) => a + b, 0);
+  const weightChange = round1(weightOnDate(member, endISO) - weightOnDate(member, startISO));
+  return {
+    avgKcal: daysWithFood ? Math.round(totalKcal / daysWithFood) : 0,
+    totalKcal,
+    avgSteps: dates.length ? Math.round(totalSteps / dates.length) : 0,
+    avgMinutes: dates.length ? Math.round(totalMinutes / dates.length) : 0,
+    weightChange,
+    dates, kcalPerDay, stepsPerDay, minutesPerDay,
+  };
+}
 
 /* ============================== Primitives =============================== */
 
@@ -1230,6 +1567,7 @@ const NAV_ITEMS = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "today", label: "Today", icon: CalendarCheck },
   { id: "programs", label: "Programs", icon: Dumbbell },
+  { id: "diet", label: "Diet", icon: UtensilsCrossed },
   { id: "members", label: "Members", icon: Users },
 ];
 
@@ -1405,31 +1743,41 @@ function last7DaysVolume(me) {
     Object.values(me.history || {}).forEach((arr) => {
       arr.forEach((h) => { if (h.date === iso) vol += h.volume; });
     });
-    days.push({ day: isoToDate(iso).toLocaleDateString(undefined, { weekday: "short" })[0], vol });
+    days.push({ day: isoToDate(iso).toLocaleDateString(undefined, { weekday: "short" })[0], vol, iso });
   }
   return days;
 }
 
-function MiniBarChart({ data }) {
+function MiniBarChart({ data, onSelect }) {
   const max = Math.max(1, ...data.map((d) => d.vol));
   return (
     <div className="flex items-end gap-2 h-20">
-      {data.map((d, i) => (
-        <div key={i} className="flex-1 flex flex-col items-center gap-1.5">
-          <div className="w-full rounded-t-lg bg-white/5 relative overflow-hidden" style={{ height: 64 }}>
-            <div
-              className={`absolute bottom-0 left-0 right-0 rounded-t-lg ${GRAD}`}
-              style={{ height: `${(d.vol / max) * 100}%`, transition: "height .8s cubic-bezier(.34,1.56,.64,1)" }}
-            />
-          </div>
-          <span className="text-[10px] text-slate-500">{d.day}</span>
-        </div>
-      ))}
+      {data.map((d, i) => {
+        const isToday = d.iso === todayISO();
+        const Wrapper = onSelect ? "button" : "div";
+        return (
+          <Wrapper
+            key={i}
+            type={onSelect ? "button" : undefined}
+            onClick={onSelect ? () => onSelect(d.iso) : undefined}
+            aria-label={onSelect ? `View ${formatNiceDate(d.iso)} — ${d.vol}kg volume` : undefined}
+            className={`flex-1 flex flex-col items-center gap-1.5 ${onSelect ? "cursor-pointer group" : ""}`}
+          >
+            <div className="w-full rounded-t-lg bg-white/5 relative overflow-hidden" style={{ height: 64 }}>
+              <div
+                className={`absolute bottom-0 left-0 right-0 rounded-t-lg ${GRAD} ${onSelect ? "group-hover:opacity-80 transition-opacity" : ""}`}
+                style={{ height: `${(d.vol / max) * 100}%`, transition: "height .8s cubic-bezier(.34,1.56,.64,1)" }}
+              />
+            </div>
+            <span className={`text-[10px] ${isToday ? "text-pink-300 font-semibold" : "text-slate-500"} ${onSelect ? "group-hover:text-white transition-colors" : ""}`}>{d.day}</span>
+          </Wrapper>
+        );
+      })}
     </div>
   );
 }
 
-function Dashboard({ me, members, programs, goTo }) {
+function Dashboard({ me, members, programs, goTo, onSelectDate }) {
   const program = me.activeProgramId ? programs[me.activeProgramId] : null;
   const lvl = levelInfo(me.xp);
   const progress = useMemo(() => computeProgress(me, program), [me, program]);
@@ -1526,7 +1874,7 @@ function Dashboard({ me, members, programs, goTo }) {
       <div className="grid md:grid-cols-3 gap-6">
         <Card className="p-6 md:col-span-2">
           <SectionHeading eyebrow="Momentum" title="Volume, last 7 days" />
-          <MiniBarChart data={vol7} />
+          <MiniBarChart data={vol7} onSelect={onSelectDate} />
         </Card>
         <Card className="p-6">
           <SectionHeading eyebrow="Latest" title="Achievements" />
@@ -3506,7 +3854,7 @@ function PhotoUploadButton({ busy, onPick, inputRef, onFile }) {
   );
 }
 
-function PhotoUploadPreviewModal({ pendingUrl, note, setNote, onSave, onCancel }) {
+function PhotoUploadPreviewModal({ pendingUrl, note, setNote, date, setDate, onSave, onCancel }) {
   useLockBodyScroll(true);
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-sm" onClick={onCancel}>
@@ -3514,9 +3862,22 @@ function PhotoUploadPreviewModal({ pendingUrl, note, setNote, onSave, onCancel }
         <SectionHeading eyebrow="Transformation" title="Add progress photo" />
         <img src={pendingUrl} alt="New progress photo preview" className="w-full max-h-[40vh] object-contain rounded-2xl border border-white/10 bg-black/30" />
         <div>
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">Date taken</label>
+          <div className="relative">
+            <Calendar size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            <input
+              type="date" value={date} max={todayISO()}
+              onChange={(e) => e.target.value && setDate(e.target.value)}
+              aria-label="Date the photo was taken"
+              className="w-full pl-10 pr-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50 [color-scheme:dark]"
+            />
+          </div>
+          <p className="text-[11px] text-slate-500 mt-1.5">Defaults to today — back-date it if you took this earlier and are uploading it now.</p>
+        </div>
+        <div>
           <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">Note (optional)</label>
           <textarea
-            value={note} onChange={(e) => setNote(e.target.value)} rows={2} autoFocus
+            value={note} onChange={(e) => setNote(e.target.value)} rows={2}
             placeholder="How are you feeling? Anything you noticed…"
             className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-pink-400/50 resize-none"
           />
@@ -3532,16 +3893,18 @@ function PhotoUploadPreviewModal({ pendingUrl, note, setNote, onSave, onCancel }
 
 // Fullscreen viewer for a progress photo: click-to-zoom, download, prev/next
 // between photos, and an editable note shown under the date.
-function PhotoLightbox({ photos, index, onIndex, onClose, onDelete, onUpdateNote }) {
+function PhotoLightbox({ photos, index, onIndex, onClose, onDelete, onUpdateNote, onUpdateDate }) {
   const [zoomed, setZoomed] = useState(false);
   const [editingNote, setEditingNote] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
+  const [editingDate, setEditingDate] = useState(false);
   const photo = photos[index];
   useLockBodyScroll(true);
 
   useEffect(() => {
     setZoomed(false);
     setEditingNote(false);
+    setEditingDate(false);
     setNoteDraft(photo?.note || "");
   }, [photo?.id]);
 
@@ -3569,9 +3932,27 @@ function PhotoLightbox({ photos, index, onIndex, onClose, onDelete, onUpdateNote
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-sm" onClick={onClose}>
       <div className="relative w-full max-w-lg max-h-full min-h-0 flex flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between w-full">
-          <span className="text-sm text-slate-300 font-semibold">{formatNiceDate(photo.date)}</span>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between w-full gap-2">
+          {editingDate ? (
+            <input
+              type="date" autoFocus value={photo.date} max={todayISO()}
+              aria-label="Edit photo date"
+              onChange={(e) => { if (e.target.value) { onUpdateDate(photo.id, e.target.value); } }}
+              onBlur={() => setEditingDate(false)}
+              className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 text-white text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50 [color-scheme:dark]"
+            />
+          ) : onUpdateDate ? (
+            <button
+              onClick={() => setEditingDate(true)}
+              className="flex items-center gap-1.5 text-sm text-slate-300 font-semibold hover:text-white transition-colors"
+              aria-label="Edit photo date"
+            >
+              {formatNiceDate(photo.date)} <Pencil size={12} className="text-slate-500" />
+            </button>
+          ) : (
+            <span className="text-sm text-slate-300 font-semibold">{formatNiceDate(photo.date)}</span>
+          )}
+          <div className="flex items-center gap-2 shrink-0">
             <button onClick={download} aria-label="Download photo" title="Download" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center">
               <Download size={15} />
             </button>
@@ -3629,7 +4010,7 @@ function PhotoLightbox({ photos, index, onIndex, onClose, onDelete, onUpdateNote
   );
 }
 
-function ProfilePage({ me, programs, photos, onUpdate, onAddPhoto, onDeletePhoto, onUpdatePhotoNote, onSignOut, goTo, onSelectDate }) {
+function ProfilePage({ me, programs, photos, onUpdate, onAddPhoto, onDeletePhoto, onUpdatePhotoNote, onUpdatePhotoDate, onSignOut, goTo, onSelectDate }) {
   const [name, setName] = useState(me.name);
   const lvl = levelInfo(me.xp);
   const program = me.activeProgramId ? programs[me.activeProgramId] : null;
@@ -3641,6 +4022,7 @@ function ProfilePage({ me, programs, photos, onUpdate, onAddPhoto, onDeletePhoto
   const [photoBusy, setPhotoBusy] = useState(false);
   const [pendingPhotoUrl, setPendingPhotoUrl] = useState(null);
   const [pendingPhotoNote, setPendingPhotoNote] = useState("");
+  const [pendingPhotoDate, setPendingPhotoDate] = useState(todayISO());
 
   const handlePhotoFile = async (e) => {
     const file = e.target.files?.[0];
@@ -3651,6 +4033,9 @@ function ProfilePage({ me, programs, photos, onUpdate, onAddPhoto, onDeletePhoto
       const dataUrl = await readAndResizeImage(file, 1000, 0.85);
       setPendingPhotoUrl(dataUrl);
       setPendingPhotoNote("");
+      // Default to today, but the person can back-date it — they may have taken
+      // the photo earlier and only got around to uploading it just now.
+      setPendingPhotoDate(todayISO());
     } catch (err) {
       console.error("Photo upload failed:", err);
     } finally {
@@ -3659,9 +4044,20 @@ function ProfilePage({ me, programs, photos, onUpdate, onAddPhoto, onDeletePhoto
   };
 
   const savePendingPhoto = () => {
-    onAddPhoto(pendingPhotoUrl, pendingPhotoNote.trim());
+    onAddPhoto(pendingPhotoUrl, pendingPhotoNote.trim(), pendingPhotoDate);
     setPendingPhotoUrl(null);
     setPendingPhotoNote("");
+  };
+
+  // Editing a photo's date changes its position in the date-sorted list, so keep
+  // the lightbox pointed at the same photo (not the same index) after it moves.
+  const handleLightboxDateChange = (id, date) => {
+    onUpdatePhotoDate(id, date);
+    const resorted = photos
+      .map((p) => (p.id === id ? { ...p, date } : p))
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    const newIdx = resorted.findIndex((p) => p.id === id);
+    if (newIdx >= 0) setLightboxIndex(newIdx);
   };
 
   return (
@@ -3795,12 +4191,14 @@ function ProfilePage({ me, programs, photos, onUpdate, onAddPhoto, onDeletePhoto
           photos={sortedPhotos} index={lightboxIndex}
           onIndex={setLightboxIndex} onClose={() => setLightboxIndex(null)}
           onDelete={onDeletePhoto} onUpdateNote={onUpdatePhotoNote}
+          onUpdateDate={onUpdatePhotoDate ? handleLightboxDateChange : undefined}
         />
       )}
 
       {pendingPhotoUrl && (
         <PhotoUploadPreviewModal
           pendingUrl={pendingPhotoUrl} note={pendingPhotoNote} setNote={setPendingPhotoNote}
+          date={pendingPhotoDate} setDate={setPendingPhotoDate}
           onSave={savePendingPhoto} onCancel={() => setPendingPhotoUrl(null)}
         />
       )}
@@ -4099,6 +4497,704 @@ function syncAllOwnedProgramsToLatestLog(programs, ownerId, exerciseId, hist) {
     }
   }
   return changed ? next : programs;
+}
+
+/* ================================= Diet tab ================================ */
+// Everything below only reads/writes the member fields added in newMember()/
+// normalizeState() above (foodLog, activityLog, weightHistory, sex,
+// activityLevel, calorieTargetOverride) plus the shared customFoods map — no
+// parallel data store, per spec §20/§21.
+
+function DietDateNav({ iso, onChange }) {
+  const isToday = iso === todayISO();
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <button onClick={() => onChange(addDaysISO(iso, -1))} aria-label="Previous day" className="p-2 rounded-xl hover:bg-white/10 text-slate-400 hover:text-white transition-colors">
+        <ChevronLeft size={18} />
+      </button>
+      <div className="text-center">
+        <div className="text-white font-bold text-base">{isToday ? "Today" : formatNiceDate(iso)}</div>
+        {!isToday && <button onClick={() => onChange(todayISO())} className="text-[11px] text-pink-300 hover:text-pink-200 mt-0.5">Jump to today</button>}
+      </div>
+      <button
+        onClick={() => onChange(addDaysISO(iso, 1))} aria-label="Next day" disabled={iso >= todayISO()}
+        className="p-2 rounded-xl hover:bg-white/10 text-slate-400 hover:text-white transition-colors disabled:opacity-30 disabled:pointer-events-none"
+      >
+        <ChevronRight size={18} />
+      </button>
+    </div>
+  );
+}
+
+// Never lets a database-derived number look identical to a guess (spec §28).
+function SourceBadge({ source }) {
+  const map = {
+    database: { label: "Database", cls: "bg-white/5 text-slate-400 border-white/10" },
+    estimate: { label: "Estimated", cls: "bg-amber-500/10 text-amber-300 border-amber-500/25" },
+    manual: { label: "Manual", cls: "bg-sky-500/10 text-sky-300 border-sky-500/25" },
+  };
+  const m = map[source] || map.database;
+  return <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border shrink-0 ${m.cls}`}>{m.label}</span>;
+}
+
+function DailySummaryCard({ me, iso, entries, target }) {
+  const consumed = entries.reduce((s, e) => s + (e.kcal || 0), 0);
+  const remaining = target - consumed;
+  const activity = activityForDay(me, iso);
+  const workout = workoutSummaryForDay(me, iso);
+  const weight = weightOnDate(me, iso);
+  const activityKcal = estimatedActivityKcal(me, iso);
+  const pct = target > 0 ? clamp((consumed / target) * 100, 0, 100) : 0;
+
+  return (
+    <Card className="p-5 md:p-6">
+      <div className={`text-xs font-semibold tracking-wider uppercase mb-4 ${GRAD_TEXT}`}>Today's summary</div>
+      <div className="flex flex-col sm:flex-row items-center gap-6">
+        <ProgressRing
+          pct={pct} size={104} stroke={10}
+          center={
+            <div className="flex flex-col items-center">
+              <span className={`text-xl font-black leading-none ${remaining < 0 ? "text-rose-300" : "text-white"}`}>{Math.abs(remaining)}</span>
+              <span className="text-[10px] text-slate-400 mt-0.5">{remaining >= 0 ? "kcal left" : "over target"}</span>
+            </div>
+          }
+        />
+        <div className="flex-1 w-full grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+          <StatBlock icon={<Target size={16} className="text-pink-400" />} label="Calorie target (est.)" value={`${target}`} />
+          <StatBlock icon={<Flame size={16} className="text-orange-400" />} label="Consumed" value={`${consumed}`} />
+          <StatBlock
+            icon={<Activity size={16} className="text-emerald-400" />} label={remaining >= 0 ? "Remaining" : "Over target"}
+            value={`${Math.abs(remaining)}`} accent={remaining < 0 ? "text-rose-300" : "text-white"}
+          />
+          <StatBlock icon={<Footprints size={16} className="text-sky-400" />} label="Steps" value={(activity.steps || 0).toLocaleString()} />
+          <StatBlock icon={<Dumbbell size={16} className="text-amber-400" />} label="Workout" value={workout.completed ? (workout.minutes ? `${workout.minutes} min` : "Done ✓") : "—"} />
+          <StatBlock icon={<Scale size={16} className="text-fuchsia-400" />} label="Weight" value={`${weight}kg`} />
+        </div>
+      </div>
+      {activityKcal > 0 && (
+        <p className="text-[11px] text-slate-500 mt-4 flex items-center gap-1.5">
+          <Info size={11} className="shrink-0" /> ~{activityKcal} kcal estimated burned from today's steps/workout — not subtracted from your target above.
+        </p>
+      )}
+    </Card>
+  );
+}
+
+function DietQuickActions({ onAddFood, onEstimateMeal, onAddWeight, onAddActivity }) {
+  const items = [
+    { label: "Add food", icon: <UtensilsCrossed size={18} className="text-pink-400" />, onClick: onAddFood },
+    { label: "Estimate meal", icon: <Sparkles size={18} className="text-amber-400" />, onClick: onEstimateMeal },
+    { label: "Add weight", icon: <Scale size={18} className="text-fuchsia-400" />, onClick: onAddWeight },
+    { label: "Add activity", icon: <Footprints size={18} className="text-sky-400" />, onClick: onAddActivity },
+  ];
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+      {items.map((it) => (
+        <button
+          key={it.label} onClick={it.onClick}
+          className="flex flex-col items-center gap-1.5 py-3.5 rounded-2xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/20 text-slate-200 transition-all duration-200"
+        >
+          {it.icon}
+          <span className="text-xs font-semibold">{it.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function FoodEntryRow({ entry, food, onUpdate, onDelete }) {
+  const [editing, setEditing] = useState(false);
+  const [amount, setAmount] = useState(entry.amount);
+  const [kcalDraft, setKcalDraft] = useState(entry.kcal);
+  const canRecalc = entry.source === "database" && !!food;
+
+  const startEdit = () => { setAmount(entry.amount); setKcalDraft(entry.kcal); setEditing(true); };
+  const save = () => {
+    if (canRecalc) {
+      const stats = computeFoodStats(food, amount, entry.unit);
+      onUpdate({ amount, ...stats });
+    } else {
+      onUpdate({ kcal: Math.round(Number(kcalDraft) || 0), source: entry.source === "database" ? "manual" : entry.source });
+    }
+    setEditing(false);
+  };
+
+  return (
+    <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/5">
+      <span className="text-lg shrink-0">{food?.icon || "🍽️"}</span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm text-white font-medium truncate">{entry.name}</span>
+          <SourceBadge source={entry.source} />
+        </div>
+        {!editing ? (
+          <div className="text-[11px] text-slate-500 mt-0.5">{entry.amount} {entry.unit} · ≈{entry.kcal} kcal{entry.note ? ` · ${entry.note}` : ""}</div>
+        ) : (
+          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+            {canRecalc ? (
+              <>
+                <NumberField value={amount} onChange={setAmount} step={food.baseUnit === "g" || food.baseUnit === "ml" ? 10 : 1} min={0} width="w-16" label={`${entry.name} amount`} />
+                <span className="text-xs text-slate-400">{entry.unit}</span>
+                <span className="text-xs text-slate-400">≈ {computeFoodStats(food, amount, entry.unit).kcal} kcal</span>
+              </>
+            ) : (
+              <>
+                <NumberField value={kcalDraft} onChange={setKcalDraft} step={10} min={0} width="w-16" label={`${entry.name} calories`} />
+                <span className="text-xs text-slate-400">kcal (manual)</span>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        {editing ? (
+          <>
+            <button onClick={save} aria-label="Save changes" className="p-2 rounded-lg hover:bg-emerald-500/10 text-emerald-300"><Check size={14} /></button>
+            <button onClick={() => setEditing(false)} aria-label="Cancel edit" className="p-2 rounded-lg hover:bg-white/10 text-slate-400"><X size={14} /></button>
+          </>
+        ) : (
+          <>
+            <span className="text-sm font-bold text-white">{entry.kcal}</span>
+            <button onClick={startEdit} aria-label={`Edit ${entry.name}`} className="p-2 rounded-lg hover:bg-white/10 text-slate-500 hover:text-slate-200"><Pencil size={13} /></button>
+            <button onClick={onDelete} aria-label={`Delete ${entry.name}`} className="p-2 rounded-lg hover:bg-rose-500/10 text-slate-500 hover:text-rose-300"><Trash2 size={13} /></button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MealSection({ meal, entries, customFoods, onUpdate, onDelete, onAddToMeal }) {
+  const total = entries.reduce((s, e) => s + (e.kcal || 0), 0);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-base">{meal.icon}</span>
+          <span className="text-sm font-bold text-white">{meal.label}</span>
+          {entries.length > 0 && <span className="text-[11px] text-slate-500">· {total} kcal</span>}
+        </div>
+        <button onClick={() => onAddToMeal(meal.id)} className="flex items-center gap-1 text-[11px] font-semibold text-pink-300 hover:text-pink-200">
+          <Plus size={12} /> Add
+        </button>
+      </div>
+      {entries.length === 0 ? (
+        <p className="text-xs text-slate-600 pl-6 pb-1">Nothing logged yet.</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {entries.map((e) => (
+            <FoodEntryRow
+              key={e.id} entry={e} food={e.foodId ? getFood(e.foodId, customFoods) : null}
+              onUpdate={(p) => onUpdate(e.id, p)} onDelete={() => onDelete(e.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustomFoodForm({ onCreate, onCancel }) {
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState("Snacks");
+  const [baseUnit, setBaseUnit] = useState("g");
+  const [baseAmount, setBaseAmount] = useState(100);
+  const [kcal, setKcal] = useState(0);
+  const [protein, setProtein] = useState(0);
+  const [carbs, setCarbs] = useState(0);
+  const [fat, setFat] = useState(0);
+
+  const submit = () => {
+    if (!name.trim() || !kcal) return;
+    onCreate({ name, category, baseUnit, baseAmount, kcal, protein, carbs, fat });
+  };
+
+  return (
+    <div className="flex flex-col gap-3 p-3 rounded-xl bg-white/[0.03] border border-dashed border-white/15">
+      <input
+        autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Food name"
+        className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50"
+      />
+      <div className="flex gap-1.5 flex-wrap">
+        {FOOD_CATEGORIES.map((c) => <Chip key={c} active={category === c} onClick={() => setCategory(c)} className="!px-2.5 !py-1 text-xs">{c}</Chip>)}
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-slate-400">Per</span>
+        <NumberField value={baseAmount} onChange={setBaseAmount} step={baseUnit === "g" || baseUnit === "ml" ? 10 : 1} min={1} width="w-14" label="base amount" />
+        <div className="flex gap-1 flex-wrap">
+          {FOOD_UNITS.map((u) => <Chip key={u} active={baseUnit === u} onClick={() => setBaseUnit(u)} className="!px-2 !py-1 text-[11px]">{u}</Chip>)}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div><label className="text-[10px] text-slate-500 block mb-1">Calories</label><NumberField value={kcal} onChange={setKcal} step={10} min={0} width="w-full" label="calories" /></div>
+        <div><label className="text-[10px] text-slate-500 block mb-1">Protein g</label><NumberField value={protein} onChange={setProtein} step={1} min={0} width="w-full" label="protein" /></div>
+        <div><label className="text-[10px] text-slate-500 block mb-1">Carbs g</label><NumberField value={carbs} onChange={setCarbs} step={1} min={0} width="w-full" label="carbs" /></div>
+        <div><label className="text-[10px] text-slate-500 block mb-1">Fat g</label><NumberField value={fat} onChange={setFat} step={1} min={0} width="w-full" label="fat" /></div>
+      </div>
+      <div className="flex gap-2 justify-end">
+        <GhostButton onClick={onCancel}>Cancel</GhostButton>
+        <GradientButton onClick={submit} disabled={!name.trim() || !kcal}><Check size={14} /> Create</GradientButton>
+      </div>
+    </div>
+  );
+}
+
+function AddFoodModal({ open, onClose, onAdd, onAddCustomFood, customFoods, defaultMeal, initialTab }) {
+  const [tab, setTab] = useState("search");
+  const [meal, setMeal] = useState(defaultMeal);
+  const [q, setQ] = useState("");
+  const [category, setCategory] = useState("All");
+  const [picked, setPicked] = useState(null);
+  const [amount, setAmount] = useState(100);
+  const [unit, setUnit] = useState("g");
+  const [showCustomForm, setShowCustomForm] = useState(false);
+  const [restPicked, setRestPicked] = useState(null);
+  const [restName, setRestName] = useState("");
+  const [restKcal, setRestKcal] = useState(500);
+  const [manualName, setManualName] = useState("");
+  const [manualKcal, setManualKcal] = useState(0);
+
+  useEffect(() => {
+    if (!open) return;
+    setTab(initialTab || "search");
+    setMeal(defaultMeal);
+    setPicked(null); setQ(""); setCategory("All"); setShowCustomForm(false);
+    setRestPicked(null); setRestName(""); setRestKcal(500);
+    setManualName(""); setManualKcal(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, defaultMeal, initialTab]);
+
+  if (!open) return null;
+
+  const hasCustom = Object.values(customFoods || {}).length > 0;
+  const filtered = allFoods(customFoods).filter((f) => {
+    const matchesCat = category === "All" ? true : category === "Custom" ? !!f.custom : f.category === category;
+    return matchesCat && f.name.toLowerCase().includes(q.toLowerCase());
+  });
+  const mealLabel = MEAL_TYPES.find((m) => m.id === meal)?.label;
+
+  const pick = (f) => { setPicked(f); setUnit(f.baseUnit); setAmount(f.baseAmount); };
+  const preview = picked ? computeFoodStats(picked, amount, unit) : null;
+
+  const submitDatabase = () => {
+    if (!picked) return;
+    const stats = computeFoodStats(picked, amount, unit);
+    onAdd({ meal, source: "database", foodId: picked.id, name: picked.name, amount, unit, ...stats });
+    setPicked(null);
+  };
+  const submitEstimate = () => {
+    const name = restPicked ? restPicked.name : restName.trim();
+    if (!name || !restKcal) return;
+    onAdd({ meal, source: "estimate", name, amount: 1, unit: "serving", kcal: Math.round(Number(restKcal) || 0) });
+    setRestPicked(null); setRestName(""); setRestKcal(500);
+  };
+  const submitManual = () => {
+    if (!manualName.trim() || !manualKcal) return;
+    onAdd({ meal, source: "manual", name: manualName.trim(), amount: 1, unit: "serving", kcal: Math.round(Number(manualKcal) || 0) });
+    setManualName(""); setManualKcal(0);
+  };
+  const createCustomFood = (payload) => {
+    const food = newCustomFood(payload);
+    onAddCustomFood(food);
+    setShowCustomForm(false);
+    pick(food);
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Add food" size="lg">
+      <div className="flex flex-col gap-1.5 mb-3">
+        <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Meal</label>
+        <div className="flex gap-1.5 flex-wrap">
+          {MEAL_TYPES.map((m) => <Chip key={m.id} active={meal === m.id} onClick={() => setMeal(m.id)}>{m.icon} {m.label}</Chip>)}
+        </div>
+      </div>
+
+      <div className="flex gap-1.5 mb-3 flex-wrap">
+        <Chip active={tab === "search"} onClick={() => setTab("search")}>Search</Chip>
+        <Chip active={tab === "estimate"} onClick={() => setTab("estimate")}>Estimate meal</Chip>
+        <Chip active={tab === "manual"} onClick={() => setTab("manual")}>Manual</Chip>
+      </div>
+
+      {tab === "search" && (
+        !picked ? (
+          <div className="flex flex-col gap-3">
+            <div className="relative">
+              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input
+                autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search foods…"
+                className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50"
+              />
+            </div>
+            <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+              {["All", ...FOOD_CATEGORIES, ...(hasCustom ? ["Custom"] : [])].map((c) => (
+                <Chip key={c} active={category === c} onClick={() => setCategory(c)} className="shrink-0">{c}</Chip>
+              ))}
+            </div>
+            {!showCustomForm ? (
+              <button onClick={() => setShowCustomForm(true)} className="w-full flex items-center gap-2 p-2.5 rounded-xl border border-dashed border-white/15 text-sm text-slate-300 hover:bg-white/5 hover:border-white/25 transition-colors">
+                <Plus size={15} className="text-pink-400" /> Create a custom food
+              </button>
+            ) : (
+              <CustomFoodForm onCreate={createCustomFood} onCancel={() => setShowCustomForm(false)} />
+            )}
+            <div className="max-h-64 overflow-y-auto flex flex-col gap-1 -mx-2 px-2">
+              {filtered.map((f) => (
+                <button key={f.id} onClick={() => pick(f)} className="flex items-center gap-3 p-2.5 rounded-xl text-left hover:bg-white/5 transition-colors">
+                  <span className="text-xl shrink-0">{f.icon}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-white font-medium truncate">{f.name}</div>
+                    <div className="text-[11px] text-slate-500">{f.kcal} kcal / {f.baseAmount} {f.baseUnit}</div>
+                  </div>
+                  {f.custom && <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-white/5 text-slate-400 border border-white/10 shrink-0">Custom</span>}
+                </button>
+              ))}
+              {filtered.length === 0 && <p className="text-sm text-slate-500 text-center py-6">No foods match.</p>}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-4">
+            <button onClick={() => setPicked(null)} className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-white w-fit"><ArrowLeft size={14} /> Back to search</button>
+            <div className="flex items-center gap-3">
+              <span className="text-3xl">{picked.icon}</span>
+              <div>
+                <div className="text-white font-bold">{picked.name}</div>
+                <div className="text-xs text-slate-500">{picked.kcal} kcal per {picked.baseAmount} {picked.baseUnit}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              <NumberField value={amount} onChange={setAmount} step={unit === "g" || unit === "ml" ? 10 : unit === "kg" || unit === "L" ? 0.5 : 1} min={0} width="w-20" label="amount" />
+              <div className="flex gap-1.5">
+                {foodUnitChoices(picked).map((u) => <Chip key={u} active={unit === u} onClick={() => setUnit(u)} className="!px-3 !py-1.5 text-xs">{u}</Chip>)}
+              </div>
+            </div>
+            <Card className="p-4 flex items-center justify-between">
+              <span className="text-sm text-slate-400">Estimated calories</span>
+              <span className="text-2xl font-black text-white">≈{preview.kcal} kcal</span>
+            </Card>
+            <GradientButton size="lg" onClick={submitDatabase}><Plus size={16} /> Add to {mealLabel}</GradientButton>
+          </div>
+        )
+      )}
+
+      {tab === "estimate" && (
+        <div className="flex flex-col gap-4">
+          <p className="text-xs text-slate-500">Restaurant meals are hard to measure exactly — pick the closest match or type your own, then adjust the estimate.</p>
+          <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto">
+            {RESTAURANT_ESTIMATES.map((r) => (
+              <button
+                key={r.id}
+                onClick={() => { setRestPicked(r); setRestName(""); setRestKcal(Math.round((r.kcalLow + r.kcalHigh) / 2 / 10) * 10); }}
+                className={`flex items-center justify-between gap-3 p-2.5 rounded-xl text-left transition-colors ${restPicked?.id === r.id ? `${GRAD} text-white` : "hover:bg-white/5 text-slate-200"}`}
+              >
+                <span className="text-sm font-medium min-w-0 truncate">{r.name}</span>
+                <span className="text-xs opacity-80 shrink-0">{r.kcalLow}–{r.kcalHigh} kcal</span>
+              </button>
+            ))}
+          </div>
+          <div>
+            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Or type your own</label>
+            <input
+              value={restName} onChange={(e) => { setRestName(e.target.value); setRestPicked(null); }} placeholder="e.g. Burger + fries"
+              className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50"
+            />
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-400">Estimated calories</span>
+            <NumberField value={restKcal} onChange={setRestKcal} step={10} min={0} width="w-20" label="estimated calories" />
+            <SourceBadge source="estimate" />
+          </div>
+          <GradientButton size="lg" onClick={submitEstimate} disabled={!(restPicked || restName.trim())}><Plus size={16} /> Add estimate to {mealLabel}</GradientButton>
+        </div>
+      )}
+
+      {tab === "manual" && (
+        <div className="flex flex-col gap-4">
+          <p className="text-xs text-slate-500">Already know the calories? Log it directly.</p>
+          <input
+            value={manualName} onChange={(e) => setManualName(e.target.value)} placeholder="What did you eat?"
+            className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50"
+          />
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-400">Calories</span>
+            <NumberField value={manualKcal} onChange={setManualKcal} step={10} min={0} width="w-20" label="calories" />
+            <SourceBadge source="manual" />
+          </div>
+          <GradientButton size="lg" onClick={submitManual} disabled={!manualName.trim() || !manualKcal}><Plus size={16} /> Add to {mealLabel}</GradientButton>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function AddWeightModal({ open, onClose, onSubmit, iso, currentKg }) {
+  const [kg, setKg] = useState(currentKg);
+  useEffect(() => { if (open) setKg(currentKg); }, [open, currentKg]);
+  if (!open) return null;
+  return (
+    <Modal
+      open={open} onClose={onClose} title="Log weight"
+      footer={<GradientButton onClick={() => { onSubmit(kg); onClose(); }}><Check size={14} /> Save</GradientButton>}
+    >
+      <p className="text-xs text-slate-500 mb-4">Logging weight for {formatNiceDate(iso)}. Weight is kept as history — this corrects that date without erasing others.</p>
+      <div className="flex items-center justify-center gap-3">
+        <NumberField value={kg} onChange={setKg} step={0.5} min={20} width="w-24" label="weight in kilograms" />
+        <span className="text-slate-300">kg</span>
+      </div>
+    </Modal>
+  );
+}
+
+function AddActivityModal({ open, onClose, onSubmit, iso, initial }) {
+  const [steps, setSteps] = useState(initial?.steps || 0);
+  const [minutes, setMinutes] = useState(initial?.workoutMinutes || 0);
+  useEffect(() => { if (open) { setSteps(initial?.steps || 0); setMinutes(initial?.workoutMinutes || 0); } }, [open, initial]);
+  if (!open) return null;
+  return (
+    <Modal
+      open={open} onClose={onClose} title="Log activity"
+      footer={<GradientButton onClick={() => { onSubmit({ steps, workoutMinutes: minutes }); onClose(); }}><Check size={14} /> Save</GradientButton>}
+    >
+      <p className="text-xs text-slate-500 mb-4">For {formatNiceDate(iso)}. Whether a workout was completed still comes from your logged sets — this just adds steps and, optionally, a duration.</p>
+      <div className="flex flex-col gap-4">
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Steps</label>
+          <NumberField value={steps} onChange={setSteps} step={500} min={0} width="w-24" label="steps" />
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Workout duration (min)</label>
+          <NumberField value={minutes} onChange={setMinutes} step={5} min={0} width="w-24" label="workout minutes" />
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function BodySettingsCard({ me, onUpdate }) {
+  const [overrideDraft, setOverrideDraft] = useState(me.calorieTargetOverride ?? "");
+  const weight = currentWeightKg(me);
+  const bmr = calcBMR({ sex: me.sex || DEFAULT_SEX, weightKg: weight, heightCm: me.heightCm ?? DEFAULT_HEIGHT_CM, age: me.age ?? DEFAULT_AGE });
+  const tdee = calcTDEE(bmr, me.activityLevel || DEFAULT_ACTIVITY_LEVEL);
+  const target = calorieTargetFor(me);
+
+  return (
+    <Card className="p-5">
+      <SectionHeading eyebrow="Estimated" title="Body & calorie settings" />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+        <div>
+          <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">Weight</label>
+          <div className="flex items-center gap-1.5"><span className="text-sm font-bold text-white">{weight}</span><span className="text-xs text-slate-400">kg (latest log)</span></div>
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">Height</label>
+          <div className="flex items-center gap-1.5">
+            <NumberField value={me.heightCm ?? DEFAULT_HEIGHT_CM} onChange={(v) => onUpdate({ heightCm: v })} step={1} min={100} width="w-16" label="height in centimeters" />
+            <span className="text-xs text-slate-400">cm</span>
+          </div>
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">Age</label>
+          <div className="flex items-center gap-1.5">
+            <NumberField value={me.age ?? DEFAULT_AGE} onChange={(v) => onUpdate({ age: v })} step={1} min={10} width="w-16" label="age in years" />
+            <span className="text-xs text-slate-400">yrs</span>
+          </div>
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">Sex</label>
+          <div className="flex gap-1.5">
+            <Chip active={(me.sex || DEFAULT_SEX) === "male"} onClick={() => onUpdate({ sex: "male" })} className="!px-2.5 !py-1 text-xs">Male</Chip>
+            <Chip active={(me.sex || DEFAULT_SEX) === "female"} onClick={() => onUpdate({ sex: "female" })} className="!px-2.5 !py-1 text-xs">Female</Chip>
+          </div>
+        </div>
+      </div>
+      <div className="mb-4">
+        <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5 block">Activity level</label>
+        <div className="flex gap-1.5 flex-wrap">
+          {ACTIVITY_LEVELS.map((a) => (
+            <Chip key={a.id} active={(me.activityLevel || DEFAULT_ACTIVITY_LEVEL) === a.id} onClick={() => onUpdate({ activityLevel: a.id })} className="!px-2.5 !py-1 text-xs">
+              {a.label}
+            </Chip>
+          ))}
+        </div>
+        <p className="text-[10px] text-slate-500 mt-1.5">{activityLevelInfo(me.activityLevel || DEFAULT_ACTIVITY_LEVEL).desc}</p>
+      </div>
+      <div className="rounded-2xl bg-white/[0.03] border border-white/5 p-4 flex flex-col gap-1.5 mb-4">
+        <div className="flex items-center justify-between text-sm"><span className="text-slate-400">BMR</span><span className="text-white font-semibold">{bmr} kcal</span></div>
+        <div className="flex items-center justify-between text-sm"><span className="text-slate-400">× Activity ({activityLevelInfo(me.activityLevel || DEFAULT_ACTIVITY_LEVEL).label})</span><span className="text-white font-semibold">{tdee} kcal</span></div>
+        <div className="h-px bg-white/10 my-1" />
+        <div className="flex items-center justify-between"><span className="text-sm font-bold text-white">Daily target</span><span className="text-lg font-black text-white">{target} kcal</span></div>
+        <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1"><Info size={10} className="shrink-0" /> Estimated only — not a medical calculation.</p>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-slate-400">Manual override</span>
+        <input
+          type="number" value={overrideDraft} onChange={(e) => setOverrideDraft(e.target.value)} placeholder="e.g. 2000"
+          className="w-24 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm text-center focus:outline-none focus:ring-1 focus:ring-pink-400/50"
+        />
+        <GhostButton onClick={() => onUpdate({ calorieTargetOverride: overrideDraft === "" ? null : Number(overrideDraft) })} className="!px-3 !py-1.5 text-xs">Apply</GhostButton>
+        {me.calorieTargetOverride != null && (
+          <GhostButton onClick={() => { setOverrideDraft(""); onUpdate({ calorieTargetOverride: null }); }} className="!px-3 !py-1.5 text-xs">Clear</GhostButton>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// Same visual language as ExerciseChart — a shared gradId per instance so
+// multiple charts can be mounted on the same page without SVG id collisions.
+function DietAreaChart({ data, dataKey, color = "#d16d94", gradId }) {
+  if (data.length < 2) {
+    return <div className="h-40 flex items-center justify-center text-sm text-slate-500">Not enough data yet to chart this.</div>;
+  }
+  const dense = data.length > 30;
+  const tickInterval = dense ? Math.ceil(data.length / 8) : 0;
+  return (
+    <ResponsiveContainer width="100%" height={180}>
+      <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity={0.5} />
+            <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+        <XAxis dataKey="label" tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} interval={tickInterval} />
+        <YAxis tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} width={40} domain={["auto", "auto"]} />
+        <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 12 }} labelStyle={{ color: "#94a3b8" }} />
+        <Area type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2.5} fill={`url(#${gradId})`} dot={dense ? false : { r: 3, fill: color }} />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+// Same CSS-bar look as the existing MiniBarChart (workout volume), generalized
+// for any numeric series — hides per-bar labels once there are too many (month view).
+function DietBarChart({ data, valueKey, labelKey }) {
+  const max = Math.max(1, ...data.map((d) => d[valueKey]));
+  return (
+    <div className="flex items-end gap-1 h-20">
+      {data.map((d, i) => (
+        <div key={i} className="flex-1 min-w-[4px] flex flex-col items-center gap-1.5">
+          <div className="w-full rounded-t-lg bg-white/5 relative overflow-hidden" style={{ height: 64 }}>
+            <div className={`absolute bottom-0 left-0 right-0 rounded-t-lg ${GRAD}`} style={{ height: `${(d[valueKey] / max) * 100}%`, transition: "height .8s cubic-bezier(.34,1.56,.64,1)" }} />
+          </div>
+          {data.length <= 14 && <span className="text-[9px] text-slate-500">{d[labelKey]}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DietHistorySection({ me }) {
+  const [range, setRange] = useState("week");
+  const days = range === "week" ? 7 : 30;
+  const endISO = todayISO();
+  const startISO = addDaysISO(endISO, -(days - 1));
+  const stats = useMemo(() => dietStatsForRange(me, startISO, endISO), [me, startISO, endISO]);
+
+  const kcalData = stats.dates.map((d, i) => ({ label: formatShortDate(d), kcal: stats.kcalPerDay[i] }));
+  const stepsData = stats.dates.map((d, i) => ({ label: formatShortDate(d), steps: stats.stepsPerDay[i] }));
+  const minutesData = stats.dates.map((d, i) => ({ label: formatShortDate(d), minutes: stats.minutesPerDay[i] }));
+  const weightData = (me.weightHistory || [])
+    .filter((w) => w.date >= startISO && w.date <= endISO)
+    .map((w) => ({ label: formatShortDate(w.date), kg: w.kg }));
+
+  return (
+    <Card className="p-5">
+      <SectionHeading
+        eyebrow="History" title="Trends & analytics"
+        right={
+          <div className="flex gap-2">
+            <Chip active={range === "week"} onClick={() => setRange("week")}>Week</Chip>
+            <Chip active={range === "month"} onClick={() => setRange("month")}>Month</Chip>
+          </div>
+        }
+      />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-6">
+        <StatBlock icon={<Flame size={16} className="text-orange-400" />} label="Avg calories" value={`${stats.avgKcal}`} />
+        <StatBlock icon={<Footprints size={16} className="text-sky-400" />} label="Avg steps" value={stats.avgSteps.toLocaleString()} />
+        <StatBlock icon={<Dumbbell size={16} className="text-amber-400" />} label="Avg workout" value={`${stats.avgMinutes} min`} />
+        <StatBlock
+          icon={<Scale size={16} className="text-fuchsia-400" />} label="Weight change"
+          value={`${stats.weightChange > 0 ? "+" : ""}${stats.weightChange}kg`}
+          accent={stats.weightChange < 0 ? "text-emerald-300" : stats.weightChange > 0 ? "text-amber-300" : "text-white"}
+        />
+      </div>
+      <div className="flex flex-col gap-6">
+        <div>
+          <p className="text-xs font-semibold text-slate-400 mb-2">Calorie intake</p>
+          <DietAreaChart data={kcalData} dataKey="kcal" color="#d16d94" gradId="dietKcalFill" />
+        </div>
+        <div>
+          <p className="text-xs font-semibold text-slate-400 mb-2">Weight trend</p>
+          {weightData.length >= 2
+            ? <DietAreaChart data={weightData} dataKey="kg" color="#a78bfa" gradId="dietWeightFill" />
+            : <div className="h-40 flex items-center justify-center text-sm text-slate-500">Log weight on a couple more days to see a trend.</div>}
+        </div>
+        <div>
+          <p className="text-xs font-semibold text-slate-400 mb-2">Steps</p>
+          <DietBarChart data={stepsData} valueKey="steps" labelKey="label" />
+        </div>
+        <div>
+          <p className="text-xs font-semibold text-slate-400 mb-2">Workout duration</p>
+          <DietBarChart data={minutesData} valueKey="minutes" labelKey="label" />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function DietPage({ me, customFoods, onAddFood, onUpdateFood, onDeleteFood, onAddCustomFood, onLogWeight, onUpdateActivity, onUpdateBodySettings }) {
+  const [iso, setIso] = useState(todayISO());
+  const [foodModal, setFoodModal] = useState(null); // { defaultMeal, initialTab } | null
+  const [weightModalOpen, setWeightModalOpen] = useState(false);
+  const [activityModalOpen, setActivityModalOpen] = useState(false);
+
+  const entries = foodEntriesForDay(me, iso);
+  const target = calorieTargetFor(me);
+  const activity = activityForDay(me, iso);
+  const entriesByMeal = (mealId) => entries.filter((e) => e.meal === mealId);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <div className={`text-xs font-semibold tracking-wider uppercase mb-1 ${GRAD_TEXT}`}>Diet</div>
+        <h1 className="text-2xl md:text-3xl font-black text-white">Nutrition & activity</h1>
+      </div>
+
+      <DietDateNav iso={iso} onChange={setIso} />
+      <DailySummaryCard me={me} iso={iso} entries={entries} target={target} />
+      <DietQuickActions
+        onAddFood={() => setFoodModal({ defaultMeal: defaultMealForNow() })}
+        onEstimateMeal={() => setFoodModal({ defaultMeal: defaultMealForNow(), initialTab: "estimate" })}
+        onAddWeight={() => setWeightModalOpen(true)}
+        onAddActivity={() => setActivityModalOpen(true)}
+      />
+
+      <div className="flex flex-col gap-5">
+        {MEAL_TYPES.map((m) => (
+          <MealSection
+            key={m.id} meal={m} entries={entriesByMeal(m.id)} customFoods={customFoods}
+            onUpdate={(id, patch) => onUpdateFood(iso, id, patch)}
+            onDelete={(id) => onDeleteFood(iso, id)}
+            onAddToMeal={(mealId) => setFoodModal({ defaultMeal: mealId })}
+          />
+        ))}
+      </div>
+
+      <BodySettingsCard me={me} onUpdate={onUpdateBodySettings} />
+      <DietHistorySection me={me} />
+
+      <AddFoodModal
+        open={!!foodModal} onClose={() => setFoodModal(null)}
+        onAdd={(payload) => onAddFood(iso, payload)}
+        onAddCustomFood={onAddCustomFood}
+        customFoods={customFoods}
+        defaultMeal={foodModal?.defaultMeal || defaultMealForNow()}
+        initialTab={foodModal?.initialTab}
+      />
+      <AddWeightModal open={weightModalOpen} onClose={() => setWeightModalOpen(false)} onSubmit={(kg) => onLogWeight(iso, kg)} iso={iso} currentKg={weightOnDate(me, iso)} />
+      <AddActivityModal open={activityModalOpen} onClose={() => setActivityModalOpen(false)} onSubmit={(patch) => onUpdateActivity(iso, patch)} iso={iso} initial={activity} />
+    </div>
+  );
 }
 
 export default function App() {
@@ -4578,13 +5674,75 @@ export default function App() {
       }
       patch = { ...patch, name: trimmed };
     }
+    // Bodyweight can be edited here (Profile) or from the Diet tab's quick "Add
+    // weight" action — both paths funnel through this same handler, so there is
+    // only ever one weight history to keep in sync (spec §5/§20).
+    if (patch.bodyweightKg !== undefined) {
+      patch = { ...patch, weightHistory: upsertWeightEntry(m.weightHistory, todayISO(), patch.bodyweightKg) };
+    }
     const next = { ...m, ...patch };
     persist({ ...state, members: { ...state.members, [session.userId]: next } });
   };
 
-  const handleAddPhoto = (dataUrl, note = "") => {
+  // ---- Diet: weight logged for a specific date (not necessarily today) ----
+  const handleLogWeight = (iso, kg) => {
+    const m = state.members[session.userId];
+    const weightHistory = upsertWeightEntry(m.weightHistory, iso, kg);
+    // Only overwrite the "current" bodyweightKg mirror if this log is (now) the
+    // most recent entry — logging a correction for a past date shouldn't move
+    // "current weight" backwards.
+    const isLatest = weightHistory[weightHistory.length - 1].date === iso;
+    const next = { ...m, weightHistory, ...(isLatest ? { bodyweightKg: Math.round(Number(kg) * 10) / 10 } : {}) };
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    showToast("Weight logged", "⚖️");
+  };
+
+  // ---- Diet: food log CRUD — every entry belongs to a date+meal, and every
+  // total downstream (daily/weekly/monthly/charts) is derived live from this
+  // same array, never duplicated (spec §14/§20) ----
+  const handleAddFoodEntry = (iso, entryPayload) => {
+    const m = state.members[session.userId];
+    const entry = newFoodEntry(entryPayload);
+    const dayList = [...(m.foodLog?.[iso] || []), entry];
+    const next = { ...m, foodLog: { ...m.foodLog, [iso]: dayList } };
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    showToast(`${entry.name || "Food"} added`, "🍽️");
+  };
+  const handleUpdateFoodEntry = (iso, entryId, patch) => {
+    const m = state.members[session.userId];
+    const dayList = (m.foodLog?.[iso] || []).map((e) => (e.id === entryId ? { ...e, ...patch } : e));
+    const next = { ...m, foodLog: { ...m.foodLog, [iso]: dayList } };
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+  };
+  const handleDeleteFoodEntry = (iso, entryId) => {
+    const m = state.members[session.userId];
+    const dayList = (m.foodLog?.[iso] || []).filter((e) => e.id !== entryId);
+    const next = { ...m, foodLog: { ...m.foodLog, [iso]: dayList } };
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+  };
+
+  // ---- Diet: custom foods are shared crew-wide, exactly like custom exercises.
+  // The caller builds the full food object (via newCustomFood()) so the id it
+  // uses for an immediate local preview is the exact same id that gets persisted. ----
+  const handleAddCustomFood = (food) => {
+    persist({ ...state, customFoods: { ...state.customFoods, [food.id]: food } });
+    showToast(`"${food.name}" added to the food database`, "🆕");
+    return food.id;
+  };
+
+  // ---- Diet: steps / logged workout minutes for a date. Workout *completion*
+  // itself always comes from the existing worklogs — this only stores the two
+  // extra numbers Diet needs that nothing else already tracks. ----
+  const handleUpdateActivity = (iso, patch) => {
+    const m = state.members[session.userId];
+    const day = { ...(m.activityLog?.[iso] || { steps: 0, workoutMinutes: 0 }), ...patch };
+    const next = { ...m, activityLog: { ...m.activityLog, [iso]: day } };
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+  };
+
+  const handleAddPhoto = (dataUrl, note = "", date) => {
     setPhotos((prev) => {
-      const next = [...prev, { id: uid("photo"), date: todayISO(), dataUrl, note }];
+      const next = [...prev, { id: uid("photo"), date: date || todayISO(), dataUrl, note }];
       storageSavePhotos(session.userId, next);
       return next;
     });
@@ -4604,6 +5762,13 @@ export default function App() {
   const handleUpdatePhotoNote = (id, note) => {
     setPhotos((prev) => {
       const next = prev.map((p) => (p.id === id ? { ...p, note } : p));
+      storageSavePhotos(session.userId, next);
+      return next;
+    });
+  };
+  const handleUpdatePhotoDate = (id, date) => {
+    setPhotos((prev) => {
+      const next = prev.map((p) => (p.id === id ? { ...p, date } : p));
       storageSavePhotos(session.userId, next);
       return next;
     });
@@ -4639,6 +5804,17 @@ export default function App() {
       case "programs":
         main = <ProgramsPage me={me} programs={state.programs} onActivate={handleActivateProgram} onSaveProgram={handleSaveProgram} onDuplicate={handleDuplicateProgram} onDelete={handleDeleteProgram} customExercises={state.customExercises} onAddCustom={handleAddCustomExercise} onEditCustom={handleEditCustomExercise} onDeleteCustom={handleDeleteCustomExercise} onSaveNote={handleSaveNote} onSaveInstructions={handleSaveCustomInstructions} />;
         break;
+      case "diet":
+        main = (
+          <DietPage
+            me={me} customFoods={state.customFoods}
+            onAddFood={handleAddFoodEntry} onUpdateFood={handleUpdateFoodEntry} onDeleteFood={handleDeleteFoodEntry}
+            onAddCustomFood={handleAddCustomFood}
+            onLogWeight={handleLogWeight} onUpdateActivity={handleUpdateActivity}
+            onUpdateBodySettings={handleUpdateProfile}
+          />
+        );
+        break;
       case "members":
         main = <MembersPage me={me} members={state.members} programs={state.programs} onOpen={setMemberProfileId} onApprove={handleApprove} onReject={handleReject} onRefresh={handleRefreshState} refreshing={refreshing} />;
         break;
@@ -4646,13 +5822,14 @@ export default function App() {
         main = (
           <ProfilePage
             me={me} programs={state.programs} photos={photos}
-            onUpdate={handleUpdateProfile} onAddPhoto={handleAddPhoto} onDeletePhoto={handleDeletePhoto} onUpdatePhotoNote={handleUpdatePhotoNote}
+            onUpdate={handleUpdateProfile} onAddPhoto={handleAddPhoto} onDeletePhoto={handleDeletePhoto}
+            onUpdatePhotoNote={handleUpdatePhotoNote} onUpdatePhotoDate={handleUpdatePhotoDate}
             onSignOut={handleSignOut} goTo={handleGoTo} onSelectDate={handleSelectDate}
           />
         );
         break;
       default:
-        main = <Dashboard me={me} members={state.members} programs={state.programs} goTo={handleGoTo} />;
+        main = <Dashboard me={me} members={state.members} programs={state.programs} goTo={handleGoTo} onSelectDate={handleSelectDate} />;
     }
   }
 
