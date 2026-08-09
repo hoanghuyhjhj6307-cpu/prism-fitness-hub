@@ -2478,13 +2478,16 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
   const addExercise = (exerciseId) => setDraft((d) => {
     const ex = getEx(exerciseId);
     // If this exercise is already scheduled on another day in this program, reuse its
-    // sets/reps/weight/notes as the starting point instead of resetting to generic
-    // defaults — keeps the same exercise consistent across the days it's used on.
+    // sets/reps/weight as the starting point instead of resetting to generic defaults
+    // — keeps the same exercise consistent across the days it's used on. Notes are
+    // NOT copied here because they aren't a per-slot field at all: they live in the
+    // single shared me.exerciseNotes[exerciseId] store and are already the same
+    // everywhere this exercise appears (see BuilderExerciseRow's sharedNote).
     const priorDay = DAY_ORDER.find((dayKey) => dayKey !== selectedDay && (d.days[dayKey]?.exercises || []).some((e) => e.exerciseId === exerciseId));
     const prior = priorDay ? d.days[priorDay].exercises.find((e) => e.exerciseId === exerciseId) : null;
     const base = prior
-      ? { id: uid("pex"), exerciseId, sets: prior.sets, reps: prior.reps, notes: prior.notes }
-      : { id: uid("pex"), exerciseId, sets: 3, reps: 10, notes: "" };
+      ? { id: uid("pex"), exerciseId, sets: prior.sets, reps: prior.reps }
+      : { id: uid("pex"), exerciseId, sets: 3, reps: 10 };
     const pex = ex?.loadType === "bodyweight" ? { ...base, targetAddedWeight: prior ? (prior.targetAddedWeight ?? 0) : 0 }
       : ex?.loadType === "cardio" ? { ...base, targetWeight: prior ? (prior.targetWeight ?? 0) : 0 }
       : { ...base, targetWeight: prior ? (prior.targetWeight ?? 20) : 20 };
@@ -3680,7 +3683,9 @@ function completeExerciseOnMember(m, finalizedInst, allInstances, program) {
   const iso = todayISO();
   let next = { ...m };
   const vol = volumeOf(finalizedInst.sets, finalizedInst.reps, finalizedInst.weight);
-  const hist = [...(next.history[finalizedInst.exerciseId] || []), { date: iso, sets: finalizedInst.sets, reps: finalizedInst.reps, weight: finalizedInst.weight, addedWeight: finalizedInst.addedWeight, volume: vol }];
+  const hist = upsertHistoryEntry(next.history[finalizedInst.exerciseId] || [], iso, {
+    sets: finalizedInst.sets, reps: finalizedInst.reps, weight: finalizedInst.weight, addedWeight: finalizedInst.addedWeight, volume: vol,
+  });
   next.history = { ...next.history, [finalizedInst.exerciseId]: hist };
 
   const wl = next.worklogs[iso] || { exercises: {} };
@@ -3859,7 +3864,11 @@ function clearWorklogEntryForDate(m, iso, exerciseId) {
 // edited from the calendar's Day Detail page (any date) is picked up too.
 function syncProgramToLatestLog(program, exerciseId, hist) {
   if (!program || !exerciseId || !hist || hist.length === 0) return program;
-  const latest = hist[hist.length - 1];
+  // Don't assume array order — find the entry with the max date explicitly,
+  // so this stays correct even if history was ever built or imported out of
+  // chronological order.
+  const latest = hist.reduce((best, h) => (!best || h.date > best.date ? h : best), null);
+  if (!latest) return program;
   let changed = false;
   const days = { ...program.days };
   for (const dayKey of Object.keys(days)) {
@@ -3886,6 +3895,29 @@ function syncProgramToLatestLog(program, exerciseId, hist) {
   }
   if (!changed) return program;
   return { ...program, days };
+}
+
+// Apply syncProgramToLatestLog across every program owned by `ownerId` — not
+// just whichever one happens to be active. A member can have several
+// programs (only one "active" for scheduling purposes), and any of them can
+// have its own Program tab open; all of them should reflect the latest log
+// for an exercise they contain, not just the active one. Returns the same
+// `programs` reference if nothing actually changed, so callers can cheaply
+// check `updated !== programs` to decide whether a write is needed.
+function syncAllOwnedProgramsToLatestLog(programs, ownerId, exerciseId, hist) {
+  if (!programs || !exerciseId || !hist || hist.length === 0) return programs;
+  let changed = false;
+  const next = { ...programs };
+  for (const id of Object.keys(programs)) {
+    const p = programs[id];
+    if (!p || p.ownerId !== ownerId) continue;
+    const updated = syncProgramToLatestLog(p, exerciseId, hist);
+    if (updated !== p) {
+      next[id] = updated;
+      changed = true;
+    }
+  }
+  return changed ? next : programs;
 }
 
 export default function App() {
@@ -4217,8 +4249,7 @@ export default function App() {
     const before = m.unlocked || [];
     const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
     const { next, xpGain, allDone } = completeExerciseOnMember(m, finalizedInst, allInstances, program);
-    const updatedProgram = syncProgramToLatestLog(program, finalizedInst.exerciseId, next.history[finalizedInst.exerciseId]);
-    const programs = updatedProgram && updatedProgram !== program ? { ...state.programs, [updatedProgram.id]: updatedProgram } : state.programs;
+    const programs = syncAllOwnedProgramsToLatestLog(state.programs, m.id, finalizedInst.exerciseId, next.history[finalizedInst.exerciseId]);
     persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
     if (allDone && finalizedInst.isPR) showToast(`Workout complete + new PR! +${xpGain} XP`, "🏆");
     else if (finalizedInst.isPR) showToast(`New personal record! +${xpGain} XP`, "🏆");
@@ -4264,9 +4295,7 @@ export default function App() {
     next.level = levelInfo(next.xp).level;
     next.unlocked = recomputeAchievements(next);
 
-    const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
-    const updatedProgram = syncProgramToLatestLog(program, exerciseId, next.history[exerciseId]);
-    const programs = updatedProgram && updatedProgram !== program ? { ...state.programs, [updatedProgram.id]: updatedProgram } : state.programs;
+    const programs = syncAllOwnedProgramsToLatestLog(state.programs, m.id, exerciseId, next.history[exerciseId]);
 
     persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
 
@@ -4292,8 +4321,7 @@ export default function App() {
     const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
     const sched = program?.days?.[dayKeyForISO(iso)];
     const { next, newIsPR, workoutsDelta } = upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched);
-    const updatedProgram = syncProgramToLatestLog(program, exerciseId, next.history[exerciseId]);
-    const programs = updatedProgram && updatedProgram !== program ? { ...state.programs, [updatedProgram.id]: updatedProgram } : state.programs;
+    const programs = syncAllOwnedProgramsToLatestLog(state.programs, m.id, exerciseId, next.history[exerciseId]);
     persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
     if (newIsPR) showToast("New personal record!", "🏆");
     else if (workoutsDelta > 0) showToast("Session marked complete", "🎉");
@@ -4313,9 +4341,7 @@ export default function App() {
     const m = state.members[session.userId];
     const { next, changed } = clearWorklogEntryForDate(m, iso, exerciseId);
     if (!changed) return;
-    const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
-    const updatedProgram = syncProgramToLatestLog(program, exerciseId, next.history[exerciseId]);
-    const programs = updatedProgram && updatedProgram !== program ? { ...state.programs, [updatedProgram.id]: updatedProgram } : state.programs;
+    const programs = syncAllOwnedProgramsToLatestLog(state.programs, m.id, exerciseId, next.history[exerciseId]);
     persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
     showToast("Log cleared", "🗑️");
   };
