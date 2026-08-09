@@ -769,6 +769,30 @@ export function applyStreak(m, program) {
   return { ...m, streak, longestStreak, lastActiveDate };
 }
 
+// Self-heal every member's stored streak against the source-of-truth worklog
+// history whenever state is loaded. Streak fields are only recomputed inside
+// the mutation handlers (completing/editing/clearing a worklog) — so any
+// value written before the recompute fix existed, or by some future code
+// path that forgets to call applyStreak, would otherwise sit there stale
+// forever until that member's next edit. Running this on load means a
+// backfilled session (or any other stored inconsistency) gets corrected the
+// moment the app opens, without requiring a fresh edit to trigger it.
+function healMemberStreaks(state) {
+  if (!state?.members) return state;
+  let changed = false;
+  const members = { ...state.members };
+  Object.keys(members).forEach((id) => {
+    const m = members[id];
+    const program = m.activeProgramId ? state.programs?.[m.activeProgramId] : null;
+    const healed = applyStreak(m, program);
+    if (healed.streak !== m.streak || healed.longestStreak !== m.longestStreak || healed.lastActiveDate !== m.lastActiveDate) {
+      members[id] = healed;
+      changed = true;
+    }
+  });
+  return changed ? { ...state, members } : state;
+}
+
 // Emails in this list are always treated as admin — both for a brand-new
 // member record on first login, and to auto-upgrade an existing record that
 // was created before the email was added here (e.g. it originally signed in
@@ -2017,7 +2041,7 @@ function ExerciseChart({ hist, metric }) {
   );
 }
 
-function ExerciseDetailPage({ exerciseId, me, onBack, onSaveNote, onSaveInstructions }) {
+function ExerciseDetailPage({ exerciseId, me, onBack, onSaveNote, onSaveInstructions, onEditCustom, canEditCustom }) {
   const ex = getEx(exerciseId);
   const hist = (me.history[exerciseId] || []).slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const stats = useMemo(() => exerciseStats(hist), [hist]);
@@ -2026,6 +2050,8 @@ function ExerciseDetailPage({ exerciseId, me, onBack, onSaveNote, onSaveInstruct
   const noteSaved = useRef(note);
   const [instr, setInstr] = useState(ex?.instructions || "");
   const instrSaved = useRef(instr);
+  const [editingMeta, setEditingMeta] = useState(false);
+  const canEditMeta = ex?.custom && onEditCustom && (!canEditCustom || canEditCustom(ex));
 
   if (!ex) {
     return (
@@ -2046,8 +2072,15 @@ function ExerciseDetailPage({ exerciseId, me, onBack, onSaveNote, onSaveInstruct
 
       <div className="flex items-center gap-4">
         <div className={`w-16 h-16 rounded-3xl ${GRAD_DIAG} flex items-center justify-center text-3xl shadow-lg shadow-pink-400/20`}>{ex.icon}</div>
-        <div>
-          <h1 className="text-2xl font-black text-white">{ex.name}</h1>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-black text-white truncate">{ex.name}</h1>
+            {canEditMeta && (
+              <button onClick={() => setEditingMeta(true)} aria-label="Edit exercise details" className="p-1.5 rounded-lg hover:bg-white/10 text-slate-500 hover:text-slate-200 shrink-0">
+                <Pencil size={14} />
+              </button>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
             <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-white/5 text-slate-300 border border-white/10">{ex.muscle}</span>
             {(ex.secondary || []).map((m) => (
@@ -2056,6 +2089,17 @@ function ExerciseDetailPage({ exerciseId, me, onBack, onSaveNote, onSaveInstruct
           </div>
         </div>
       </div>
+
+      {canEditMeta && editingMeta && (
+        <Card className="p-4">
+          <CustomExerciseForm
+            initial={ex}
+            existingExercises={[]}
+            onCancel={() => setEditingMeta(false)}
+            onSaveEdit={(payload) => { onEditCustom(payload); setEditingMeta(false); }}
+          />
+        </Card>
+      )}
 
       <Card className="p-5">
         <div className={`text-xs font-semibold tracking-wider uppercase mb-2 ${GRAD_TEXT}`}>Instructions</div>
@@ -2242,19 +2286,25 @@ const LOAD_TYPE_BADGE_CLASS = {
 };
 const CUSTOM_ICON_CHOICES = ["⭐", "🏋️", "🤸", "🦵", "💪", "🧘", "🚣", "🚴", "🏃", "🙆", "🧗"];
 
-function CustomExerciseForm({ onCreate, onCancel, existingExercises = [], onUseExisting }) {
-  const [name, setName] = useState("");
-  const [muscle, setMuscle] = useState(MAIN_MUSCLE_OPTIONS[0]);
-  const [secondary, setSecondary] = useState([]);
-  const [icon, setIcon] = useState(CUSTOM_ICON_CHOICES[0]);
-  const [loadType, setLoadType] = useState("external");
-  const [bwPercent, setBwPercent] = useState(100);
-  const [instructions, setInstructions] = useState("");
+function CustomExerciseForm({ onCreate, onSaveEdit, onCancel, existingExercises = [], onUseExisting, initial = null }) {
+  // When `initial` is set we're editing an already-existing custom exercise in place
+  // (same id) rather than creating a new one. Because every screen in the app looks
+  // exercise metadata up live via getEx(id) instead of copying it, saving here is all
+  // that's needed — programs, history, and worklogs all pick up the change automatically.
+  const isEditing = !!initial;
+  const [name, setName] = useState(initial?.name || "");
+  const [muscle, setMuscle] = useState(initial?.muscle || MAIN_MUSCLE_OPTIONS[0]);
+  const [secondary, setSecondary] = useState(initial?.secondary || []);
+  const [icon, setIcon] = useState(initial?.icon || CUSTOM_ICON_CHOICES[0]);
+  const [loadType, setLoadType] = useState(initial?.loadType || "external");
+  const [bwPercent, setBwPercent] = useState(initial?.bwPercent || 100);
+  const [instructions, setInstructions] = useState(initial?.instructions || "");
   // Guard against accidental duplicate library entries: if the typed name exactly
   // matches an exercise that already exists (built-in or custom), nudge toward
-  // reusing it instead of creating a near-identical second copy.
+  // reusing it instead of creating a near-identical second copy. While editing,
+  // the exercise being edited is excluded so it doesn't flag itself as a dupe.
   const duplicateMatch = name.trim()
-    ? existingExercises.find((e) => e.name.trim().toLowerCase() === name.trim().toLowerCase())
+    ? existingExercises.find((e) => e.id !== initial?.id && e.name.trim().toLowerCase() === name.trim().toLowerCase())
     : null;
   const canSave = name.trim().length > 0 && !duplicateMatch;
   const toggleSecondary = (m) => setSecondary((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
@@ -2262,7 +2312,7 @@ function CustomExerciseForm({ onCreate, onCancel, existingExercises = [], onUseE
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 flex flex-col gap-3 mb-3">
-      <div className="text-xs font-semibold tracking-wider uppercase text-slate-400">New custom exercise</div>
+      <div className="text-xs font-semibold tracking-wider uppercase text-slate-400">{isEditing ? "Edit exercise" : "New custom exercise"}</div>
       <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Exercise name"
         className="w-full px-3.5 py-2 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-pink-400/50" />
 
@@ -2338,18 +2388,25 @@ function CustomExerciseForm({ onCreate, onCancel, existingExercises = [], onUseE
 
       <div className="flex gap-2 justify-end pt-1">
         <GhostButton onClick={onCancel}>Cancel</GhostButton>
-        <GradientButton disabled={!canSave} onClick={() => onCreate({ name, muscle, secondary, icon, loadType, bwPercent, instructions })}>
-          <Plus size={14} /> Create & add
-        </GradientButton>
+        {isEditing ? (
+          <GradientButton disabled={!canSave} onClick={() => onSaveEdit({ id: initial.id, name, muscle, secondary, icon, loadType, bwPercent, instructions })}>
+            <Check size={14} /> Save changes
+          </GradientButton>
+        ) : (
+          <GradientButton disabled={!canSave} onClick={() => onCreate({ name, muscle, secondary, icon, loadType, bwPercent, instructions })}>
+            <Plus size={14} /> Create & add
+          </GradientButton>
+        )}
       </div>
     </div>
   );
 }
 
-function ExercisePicker({ open, onClose, onPick, excludeIds = [], customExercises = {}, onAddCustom, onDeleteCustom, canDeleteCustom }) {
+function ExercisePicker({ open, onClose, onPick, excludeIds = [], customExercises = {}, onAddCustom, onEditCustom, onDeleteCustom, canDeleteCustom }) {
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("All");
-  const [showCustomForm, setShowCustomForm] = useState(false);
+  // formTarget: null (browsing list) | "new" (create form) | an exercise object (edit form)
+  const [formTarget, setFormTarget] = useState(null);
   if (!open) return null;
   const excludeSet = new Set(excludeIds);
   const list = allExercises(customExercises);
@@ -2360,9 +2417,11 @@ function ExercisePicker({ open, onClose, onPick, excludeIds = [], customExercise
     return matchesTab && matchesQ;
   });
   const hasCustom = Object.keys(customExercises).length > 0;
+  const editingExercise = formTarget && formTarget !== "new" ? formTarget : null;
+  const showForm = formTarget !== null;
 
   return (
-    <Modal open={open} onClose={() => { setShowCustomForm(false); onClose(); }} title="Add an exercise" size="lg">
+    <Modal open={open} onClose={() => { setFormTarget(null); onClose(); }} title="Add an exercise" size="lg">
       <div className="relative mb-3">
         <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
         <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search exercises or muscle…"
@@ -2380,33 +2439,41 @@ function ExercisePicker({ open, onClose, onPick, excludeIds = [], customExercise
         ))}
       </div>
 
-      {showCustomForm ? (
+      {showForm ? (
         <CustomExerciseForm
+          initial={editingExercise}
           existingExercises={list}
           onUseExisting={(id) => {
-            setShowCustomForm(false);
+            setFormTarget(null);
             onPick(id);
             onClose();
           }}
-          onCancel={() => setShowCustomForm(false)}
+          onCancel={() => setFormTarget(null)}
           onCreate={(payload) => {
             const id = onAddCustom(payload);
-            setShowCustomForm(false);
+            setFormTarget(null);
             onPick(id);
             onClose();
+          }}
+          onSaveEdit={(payload) => {
+            // Same id, updated fields — every program, history entry, and worklog that
+            // references this exercise looks it up live, so they all reflect this instantly.
+            onEditCustom?.(payload);
+            setFormTarget(null);
           }}
         />
       ) : (
-        <button onClick={() => setShowCustomForm(true)}
+        <button onClick={() => setFormTarget("new")}
           className="w-full flex items-center gap-2 p-2.5 mb-2 rounded-xl border border-dashed border-white/15 text-sm text-slate-300 hover:bg-white/5 hover:border-white/25 transition-colors">
           <Plus size={15} className="text-pink-400" /> Create your own exercise
         </button>
       )}
 
-      {!showCustomForm && (
+      {!showForm && (
         <div className="max-h-72 overflow-y-auto flex flex-col gap-1 -mx-2 px-2">
           {filtered.map((e) => {
             const already = excludeSet.has(e.id);
+            const canManage = e.custom && canDeleteCustom?.(e);
             return (
               <div key={e.id} className="flex items-center gap-1">
                 <button
@@ -2425,7 +2492,12 @@ function ExercisePicker({ open, onClose, onPick, excludeIds = [], customExercise
                   </div>
                   {already && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-slate-400 shrink-0">Added</span>}
                 </button>
-                {e.custom && onDeleteCustom && canDeleteCustom?.(e) && (
+                {onEditCustom && canManage && (
+                  <button onClick={() => setFormTarget(e)} aria-label={`Edit custom exercise ${e.name}`} className="p-2 rounded-xl hover:bg-white/10 text-slate-500 hover:text-slate-200 shrink-0">
+                    <Pencil size={14} />
+                  </button>
+                )}
+                {e.custom && onDeleteCustom && canManage && (
                   <button onClick={() => onDeleteCustom(e.id)} aria-label={`Delete custom exercise ${e.name}`} className="p-2 rounded-xl hover:bg-rose-500/10 text-slate-500 hover:text-rose-300 shrink-0">
                     <Trash2 size={14} />
                   </button>
@@ -2496,7 +2568,7 @@ function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, onC
   );
 }
 
-function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, onAddCustom, onDeleteCustom, bodyweightKg, me, onSaveNote, onSaveInstructions }) {
+function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, onAddCustom, onEditCustom, onDeleteCustom, bodyweightKg, me, onSaveNote, onSaveInstructions }) {
   const [draft, setDraft] = useState(initial);
   const [selectedDay, setSelectedDay] = useState("mon");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -2640,7 +2712,7 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
 
       <ExercisePicker
         open={pickerOpen} onClose={() => setPickerOpen(false)} onPick={addExercise} excludeIds={dayData.exercises.map((e) => e.exerciseId)}
-        customExercises={customExercises} onAddCustom={onAddCustom} onDeleteCustom={onDeleteCustom}
+        customExercises={customExercises} onAddCustom={onAddCustom} onEditCustom={onEditCustom} onDeleteCustom={onDeleteCustom}
         canDeleteCustom={(e) => !e.createdBy || e.createdBy === me?.id || me?.role === "admin"}
       />
 
@@ -2649,6 +2721,7 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
           <ExerciseDetailPage
             exerciseId={viewExerciseId} me={me} onBack={() => setViewExerciseId(null)}
             onSaveNote={onSaveNote} onSaveInstructions={onSaveInstructions}
+            onEditCustom={onEditCustom} canEditCustom={(e) => !e.createdBy || e.createdBy === me?.id || me?.role === "admin"}
           />
         )}
       </Modal>
@@ -2707,7 +2780,7 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
   );
 }
 
-function ProgramsPage({ me, programs, onActivate, onSaveProgram, onDuplicate, onDelete, customExercises, onAddCustom, onDeleteCustom, onSaveNote, onSaveInstructions }) {
+function ProgramsPage({ me, programs, onActivate, onSaveProgram, onDuplicate, onDelete, customExercises, onAddCustom, onEditCustom, onDeleteCustom, onSaveNote, onSaveInstructions }) {
   const [editingId, setEditingId] = useState(null);
   const [creating, setCreating] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
@@ -2721,7 +2794,7 @@ function ProgramsPage({ me, programs, onActivate, onSaveProgram, onDuplicate, on
         onCancel={() => { setCreating(false); setEditingId(null); }}
         onDelete={editingId ? () => { onDelete(editingId); setEditingId(null); } : null}
         onSave={(draft) => { onSaveProgram(draft); setCreating(false); setEditingId(null); }}
-        customExercises={customExercises} onAddCustom={onAddCustom} onDeleteCustom={onDeleteCustom} bodyweightKg={me.bodyweightKg} me={me} onSaveNote={onSaveNote}
+        customExercises={customExercises} onAddCustom={onAddCustom} onEditCustom={onEditCustom} onDeleteCustom={onDeleteCustom} bodyweightKg={me.bodyweightKg} me={me} onSaveNote={onSaveNote}
         onSaveInstructions={onSaveInstructions}
       />
     );
@@ -4011,7 +4084,9 @@ export default function App() {
         return;
       }
       if (s) {
-        setState(s);
+        const healed = healMemberStreaks(s);
+        setState(healed);
+        if (healed !== s) storageSaveState(healed); // persist the correction, not just show it locally
       } else {
         // Query genuinely succeeded and found no row — this really is the
         // first run ever, so it's safe to seed it.
@@ -4102,14 +4177,14 @@ export default function App() {
   const fetchFreshState = useCallback(async () => {
     if (Date.now() - lastPersistRef.current < 3000) return; // don't clobber a very recent local write
     const { data: fresh, failed } = await storageLoadState();
-    if (!failed && fresh) setState(fresh);
+    if (!failed && fresh) setState(healMemberStreaks(fresh));
   }, []);
 
   const handleRefreshState = useCallback(async () => {
     setRefreshing(true);
     lastPersistRef.current = 0; // manual refresh should always go through
     const { data: fresh, failed } = await storageLoadState();
-    if (!failed && fresh) setState(fresh);
+    if (!failed && fresh) setState(healMemberStreaks(fresh));
     setRefreshing(false);
   }, []);
 
@@ -4273,6 +4348,26 @@ export default function App() {
     persist({ ...state, customExercises: { ...state.customExercises, [ex.id]: ex } });
     showToast(`"${ex.name}" added to your library`, "🆕");
     return ex.id;
+  };
+  // Editing keeps the same id, so every program day, history entry, and worklog that
+  // references this exercise (all of which store only the id, never a copy of the
+  // name/muscle/icon/etc.) picks up the change immediately via getEx() — no separate
+  // sync step needed anywhere else in the app.
+  const handleEditCustomExercise = ({ id, ...payload }) => {
+    const existing = state.customExercises[id];
+    if (!existing) return;
+    const updated = {
+      ...existing,
+      name: payload.name.trim(),
+      muscle: payload.muscle || existing.muscle,
+      secondary: Array.isArray(payload.secondary) ? payload.secondary : [],
+      icon: payload.icon || existing.icon,
+      loadType: payload.loadType || existing.loadType,
+      bwPercent: payload.loadType === "bodyweight" ? (Number(payload.bwPercent) || 100) : undefined,
+      instructions: (payload.instructions || "").trim() || existing.instructions,
+    };
+    persist({ ...state, customExercises: { ...state.customExercises, [id]: updated } });
+    showToast(`"${updated.name}" updated everywhere it's used`, "✏️");
   };
   const handleDeleteCustomExercise = (id) => {
     const ex = state.customExercises[id];
@@ -4470,7 +4565,7 @@ export default function App() {
 
   let main;
   if (exerciseId) {
-    main = <ExerciseDetailPage exerciseId={exerciseId} me={me} onBack={() => setExerciseId(null)} onSaveNote={handleSaveNote} onSaveInstructions={handleSaveCustomInstructions} />;
+    main = <ExerciseDetailPage exerciseId={exerciseId} me={me} onBack={() => setExerciseId(null)} onSaveNote={handleSaveNote} onSaveInstructions={handleSaveCustomInstructions} onEditCustom={handleEditCustomExercise} canEditCustom={(e) => !e.createdBy || e.createdBy === me?.id || me?.role === "admin"} />;
   } else if (memberProfileId && state.members[memberProfileId]) {
     main = <MemberProfilePage member={state.members[memberProfileId]} me={me} programs={state.programs} onBack={() => setMemberProfileId(null)} onRemove={handleRemoveMember} onCopyProgram={handleCopyProgramFromMember} />;
   } else if (dayDetailISO) {
@@ -4489,7 +4584,7 @@ export default function App() {
         main = <TodayPage me={me} programs={state.programs} openExercise={setExerciseId} onCompleteExercise={handleCompleteExercise} onEditDone={handleEditDone} onCreateProgram={() => handleGoTo("programs")} />;
         break;
       case "programs":
-        main = <ProgramsPage me={me} programs={state.programs} onActivate={handleActivateProgram} onSaveProgram={handleSaveProgram} onDuplicate={handleDuplicateProgram} onDelete={handleDeleteProgram} customExercises={state.customExercises} onAddCustom={handleAddCustomExercise} onDeleteCustom={handleDeleteCustomExercise} onSaveNote={handleSaveNote} onSaveInstructions={handleSaveCustomInstructions} />;
+        main = <ProgramsPage me={me} programs={state.programs} onActivate={handleActivateProgram} onSaveProgram={handleSaveProgram} onDuplicate={handleDuplicateProgram} onDelete={handleDeleteProgram} customExercises={state.customExercises} onAddCustom={handleAddCustomExercise} onEditCustom={handleEditCustomExercise} onDeleteCustom={handleDeleteCustomExercise} onSaveNote={handleSaveNote} onSaveInstructions={handleSaveCustomInstructions} />;
         break;
       case "members":
         main = <MembersPage me={me} members={state.members} programs={state.programs} onOpen={setMemberProfileId} onApprove={handleApprove} onReject={handleReject} onRefresh={handleRefreshState} refreshing={refreshing} />;
