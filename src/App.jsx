@@ -713,26 +713,60 @@ function recomputeAchievements(m) {
   });
   return Array.from(unlockedNow);
 }
-export function applyStreak(m, iso, program) {
-  if (m.lastActiveDate === iso) return m; // already counted today
-  let streakBroken = true;
-  if (m.lastActiveDate && program) {
-    streakBroken = false;
-    // Walk every day strictly between the last active date and today. The streak
-    // only breaks if one of those in-between days was a scheduled WORKOUT day that
-    // went unlogged — scheduled rest days in between are expected and don't break it.
-    let cursor = addDaysISO(m.lastActiveDate, 1);
+// Compute a member's current/longest streak from scratch, based on which
+// dates have a fully-completed worklog and the active program's weekly
+// schedule — rather than incrementally bumping a counter only at the moment
+// "today" gets marked complete. That incremental approach couldn't handle
+// backfilling: if someone forgets to log Tuesday's workout and only fills it
+// in on Wednesday (from the calendar's Day Detail page), the streak needs to
+// treat Tuesday as done retroactively, which a one-way "today only" counter
+// can never do. Recomputing from the full worklog history on every edit
+// (today's flow or a past-date edit) keeps the streak correct no matter
+// when or where a session gets logged, edited, or un-logged.
+//
+// A date only needs a completed log to keep the streak alive if it was a
+// scheduled workout day; scheduled rest days (or days with no schedule at
+// all when no program is active) pass through for free, exactly like the
+// old logic did.
+function recomputeStreak(m, program) {
+  const worklogs = m.worklogs || {};
+  const completedDates = Object.keys(worklogs).filter((iso) => worklogs[iso]?.completedAt).sort();
+  if (completedDates.length === 0) {
+    return { streak: 0, longestStreak: m.longestStreak || 0, lastActiveDate: null };
+  }
+  const today = todayISO();
+  // "As of" date for the current streak: today if already completed, else
+  // yesterday — so an unfinished-but-not-yet-missed today doesn't zero out
+  // an otherwise-intact streak before the day is even over.
+  const endDate = completedDates.includes(today) ? today : addDaysISO(today, -1);
+  const firstDate = completedDates[0];
+  const mustLogDay = (iso) => {
+    if (!program) return true; // no active program: every day counts, so any gap breaks the streak
+    const sched = program.days?.[dayKeyForISO(iso)];
+    return !sched || sched.type === "workout";
+  };
+  let running = 0;
+  let longest = 0;
+  if (endDate >= firstDate) {
+    let cursor = firstDate;
     let guard = 0;
-    while (cursor < iso && guard < 3660) {
-      const sched = program.days?.[dayKeyForISO(cursor)];
-      if (!sched || sched.type === "workout") { streakBroken = true; break; }
+    while (cursor <= endDate && guard < 3660 * 3) {
+      if (worklogs[cursor]?.completedAt) running += 1;
+      else if (mustLogDay(cursor)) running = 0;
+      if (running > longest) longest = running;
       cursor = addDaysISO(cursor, 1);
       guard++;
     }
   }
-  const streak = streakBroken ? 1 : (m.streak || 0) + 1;
-  const longest = Math.max(m.longestStreak || 0, streak);
-  return { ...m, streak, longestStreak: longest, lastActiveDate: iso };
+  return {
+    streak: running,
+    longestStreak: Math.max(m.longestStreak || 0, longest),
+    lastActiveDate: completedDates[completedDates.length - 1],
+  };
+}
+export function applyStreak(m, program) {
+  const { streak, longestStreak, lastActiveDate } = recomputeStreak(m, program);
+  return { ...m, streak, longestStreak, lastActiveDate };
 }
 
 // Emails in this list are always treated as admin — both for a brand-new
@@ -2406,7 +2440,7 @@ function ExercisePicker({ open, onClose, onPick, excludeIds = [], customExercise
   );
 }
 
-function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, onCopyToDays, dragProps, bodyweightKg, sharedNote, onSaveNote }) {
+function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, onCopyToDays, onOpen, dragProps, bodyweightKg, sharedNote, onSaveNote }) {
   const ex = getEx(pex.exerciseId);
   const isCardio = ex?.loadType === "cardio";
   const [noteDraft, setNoteDraft] = useState(sharedNote || "");
@@ -2416,11 +2450,16 @@ function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, onC
     <div {...dragProps} className="rounded-2xl bg-white/[0.04] border border-white/10 p-3.5 flex flex-col gap-3">
       <div className="flex items-center gap-3">
         <span className="cursor-grab text-slate-600 hover:text-slate-400 shrink-0" title="Drag to reorder"><GripVertical size={16} /></span>
-        <span className="text-xl shrink-0">{ex?.icon}</span>
-        <div className="min-w-0 flex-1">
-          <div className="text-sm text-white font-medium truncate">{ex?.name}</div>
-          <div className="text-[11px] text-slate-500">{ex?.muscle}</div>
-        </div>
+        <button
+          type="button" onClick={onOpen} disabled={!onOpen}
+          className="min-w-0 flex-1 flex items-center gap-3 text-left rounded-lg -m-1 p-1 disabled:cursor-default enabled:hover:bg-white/[0.05] transition-colors"
+          aria-label={`View ${ex?.name || "exercise"} details`} title={onOpen ? "View exercise details" : undefined}>
+          <span className="text-xl shrink-0">{ex?.icon}</span>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm text-white font-medium truncate">{ex?.name}</div>
+            <div className="text-[11px] text-slate-500">{ex?.muscle}</div>
+          </div>
+        </button>
         <div className="flex items-center gap-0.5 shrink-0">
           <button disabled={index === 0} onClick={() => onMove(-1)} aria-label={`Move ${ex?.name || "exercise"} up`} className="p-1.5 rounded-lg hover:bg-white/10 text-slate-500 hover:text-white disabled:opacity-20 disabled:pointer-events-none"><ChevronUp size={14} /></button>
           <button disabled={index === total - 1} onClick={() => onMove(1)} aria-label={`Move ${ex?.name || "exercise"} down`} className="p-1.5 rounded-lg hover:bg-white/10 text-slate-500 hover:text-white disabled:opacity-20 disabled:pointer-events-none"><ChevronDown size={14} /></button>
@@ -2457,11 +2496,12 @@ function BuilderExerciseRow({ pex, index, total, onChange, onRemove, onMove, onC
   );
 }
 
-function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, onAddCustom, onDeleteCustom, bodyweightKg, me, onSaveNote }) {
+function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, onAddCustom, onDeleteCustom, bodyweightKg, me, onSaveNote, onSaveInstructions }) {
   const [draft, setDraft] = useState(initial);
   const [selectedDay, setSelectedDay] = useState("mon");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [viewExerciseId, setViewExerciseId] = useState(null);
   const dragIndex = useRef(null);
 
   const dayData = draft.days[selectedDay];
@@ -2584,7 +2624,7 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
                   key={pex.id} pex={pex} index={i} total={dayData.exercises.length} bodyweightKg={bodyweightKg}
                   sharedNote={me.exerciseNotes?.[pex.exerciseId] || ""} onSaveNote={onSaveNote}
                   onChange={(p) => patchExercise(i, p)} onRemove={() => removeExercise(i)} onMove={(dir) => moveExercise(i, dir)}
-                  onCopyToDays={() => openCopyModal(i)}
+                  onCopyToDays={() => openCopyModal(i)} onOpen={() => setViewExerciseId(pex.exerciseId)}
                   dragProps={{
                     draggable: true,
                     onDragStart: () => (dragIndex.current = i),
@@ -2603,6 +2643,15 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
         customExercises={customExercises} onAddCustom={onAddCustom} onDeleteCustom={onDeleteCustom}
         canDeleteCustom={(e) => !e.createdBy || e.createdBy === me?.id || me?.role === "admin"}
       />
+
+      <Modal open={!!viewExerciseId} onClose={() => setViewExerciseId(null)} title="Exercise details" size="lg">
+        {viewExerciseId && (
+          <ExerciseDetailPage
+            exerciseId={viewExerciseId} me={me} onBack={() => setViewExerciseId(null)}
+            onSaveNote={onSaveNote} onSaveInstructions={onSaveInstructions}
+          />
+        )}
+      </Modal>
 
       <div className="flex items-center justify-between gap-3 pb-4">
         {onDelete ? <GhostButton danger onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> Delete program</GhostButton> : <span />}
@@ -2658,7 +2707,7 @@ function ProgramEditor({ initial, onSave, onCancel, onDelete, customExercises, o
   );
 }
 
-function ProgramsPage({ me, programs, onActivate, onSaveProgram, onDuplicate, onDelete, customExercises, onAddCustom, onDeleteCustom, onSaveNote }) {
+function ProgramsPage({ me, programs, onActivate, onSaveProgram, onDuplicate, onDelete, customExercises, onAddCustom, onDeleteCustom, onSaveNote, onSaveInstructions }) {
   const [editingId, setEditingId] = useState(null);
   const [creating, setCreating] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
@@ -2673,6 +2722,7 @@ function ProgramsPage({ me, programs, onActivate, onSaveProgram, onDuplicate, on
         onDelete={editingId ? () => { onDelete(editingId); setEditingId(null); } : null}
         onSave={(draft) => { onSaveProgram(draft); setCreating(false); setEditingId(null); }}
         customExercises={customExercises} onAddCustom={onAddCustom} onDeleteCustom={onDeleteCustom} bodyweightKg={me.bodyweightKg} me={me} onSaveNote={onSaveNote}
+        onSaveInstructions={onSaveInstructions}
       />
     );
   }
@@ -3701,9 +3751,9 @@ function completeExerciseOnMember(m, finalizedInst, allInstances, program) {
     completedAt = Date.now();
     next.totalWorkouts = (next.totalWorkouts || 0) + 1;
     xpGain += 50;
-    next = applyStreak(next, iso, program);
   }
   next.worklogs = { ...next.worklogs, [iso]: { ...wl, exercises, completedAt } };
+  next = applyStreak(next, program);
   next.xp = (next.xp || 0) + xpGain;
   next.level = levelInfo(next.xp).level;
   next.unlocked = recomputeAchievements(next);
@@ -3761,13 +3811,14 @@ function recomputeExercisePRFlags(originalWorklogs, workingWorklogs, exerciseId,
 
 // Log or edit a single exercise's numbers for an arbitrary date (past, present,
 // or otherwise), used by the Day Detail page reached from the calendar. This
-// mirrors completeExerciseOnMember/handleEditDone but is date-generic and —
-// deliberately — never touches streaks, since those are a sequential
-// "current state" concept that a retroactive edit shouldn't silently rewrite.
+// mirrors completeExerciseOnMember/handleEditDone and — like that flow — the
+// streak is recomputed from the full worklog history afterward, so a session
+// backfilled here (e.g. logging yesterday's forgotten workout today) is
+// treated exactly as if it had been logged on time.
 // (Program-target syncing is handled separately by the caller via
 // syncProgramToLatestLog, since that should follow the latest log by date
 // rather than by which page made the edit.)
-function upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched) {
+function upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched, program) {
   const hist = m.history[exerciseId] || [];
   const existingIdx = hist.findIndex((h) => h.date === iso);
   const oldVol = existingIdx >= 0 ? hist[existingIdx].volume : 0;
@@ -3804,6 +3855,7 @@ function upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched) {
     totalWorkouts: Math.max(0, (m.totalWorkouts || 0) + workoutsDelta),
     xp: Math.max(0, (m.xp || 0) + xpDelta),
   };
+  next = applyStreak(next, program);
   next.level = levelInfo(next.xp).level;
   next.unlocked = recomputeAchievements(next);
   const newIsPR = next.worklogs[iso].exercises[exerciseId].isPR;
@@ -3812,8 +3864,10 @@ function upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched) {
 
 // Revert a logged exercise on an arbitrary date back to "not logged" — undoes
 // exactly what upsertWorklogEntryForDate would have added, nothing else, and
-// re-checks whether removing this entry hands the PR badge to a different date.
-function clearWorklogEntryForDate(m, iso, exerciseId) {
+// re-checks whether removing this entry hands the PR badge to a different
+// date. The streak is recomputed afterward too, since un-logging a session
+// can retroactively break a streak that was counting on it.
+function clearWorklogEntryForDate(m, iso, exerciseId, program) {
   const wl = m.worklogs[iso];
   const entry = wl?.exercises?.[exerciseId];
   if (!entry) return { next: m, changed: false };
@@ -3845,6 +3899,7 @@ function clearWorklogEntryForDate(m, iso, exerciseId) {
     totalWorkouts: Math.max(0, (m.totalWorkouts || 0) + workoutsDelta),
     xp: Math.max(0, (m.xp || 0) + xpDelta),
   };
+  next = applyStreak(next, program);
   next.level = levelInfo(next.xp).level;
   next.unlocked = recomputeAchievements(next);
   return { next, changed: true };
@@ -4310,17 +4365,19 @@ export default function App() {
   };
 
   // Log or edit an exercise's numbers for any date from the calendar's Day
-  // Detail page — past sessions included. Isolated from the Today-page flow
-  // above in every other respect (no streak changes), but program targets
-  // are still synced to whatever is now the latest log for this exercise —
-  // an edit here can be the most recent entry for an exercise just as easily
-  // as one made on the Today page, and the Program tab should reflect that.
+  // Detail page — past sessions included. Streaks are recomputed from the
+  // full worklog history (see recomputeStreak/applyStreak), so backfilling a
+  // forgotten session here correctly restores/extends the streak, exactly as
+  // if it had been logged on the day itself. Program targets are still
+  // synced to whatever is now the latest log for this exercise — an edit
+  // here can be the most recent entry for an exercise just as easily as one
+  // made on the Today page, and the Program tab should reflect that.
   const handleEditWorklogForDate = (iso, exerciseId, patch) => {
     const m = state.members[session.userId];
     const before = m.unlocked || [];
     const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
     const sched = program?.days?.[dayKeyForISO(iso)];
-    const { next, newIsPR, workoutsDelta } = upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched);
+    const { next, newIsPR, workoutsDelta } = upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched, program);
     const programs = syncAllOwnedProgramsToLatestLog(state.programs, m.id, exerciseId, next.history[exerciseId]);
     persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
     if (newIsPR) showToast("New personal record!", "🏆");
@@ -4339,7 +4396,8 @@ export default function App() {
   // history remains at all).
   const handleClearWorklogForDate = (iso, exerciseId) => {
     const m = state.members[session.userId];
-    const { next, changed } = clearWorklogEntryForDate(m, iso, exerciseId);
+    const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
+    const { next, changed } = clearWorklogEntryForDate(m, iso, exerciseId, program);
     if (!changed) return;
     const programs = syncAllOwnedProgramsToLatestLog(state.programs, m.id, exerciseId, next.history[exerciseId]);
     persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
@@ -4431,7 +4489,7 @@ export default function App() {
         main = <TodayPage me={me} programs={state.programs} openExercise={setExerciseId} onCompleteExercise={handleCompleteExercise} onEditDone={handleEditDone} onCreateProgram={() => handleGoTo("programs")} />;
         break;
       case "programs":
-        main = <ProgramsPage me={me} programs={state.programs} onActivate={handleActivateProgram} onSaveProgram={handleSaveProgram} onDuplicate={handleDuplicateProgram} onDelete={handleDeleteProgram} customExercises={state.customExercises} onAddCustom={handleAddCustomExercise} onDeleteCustom={handleDeleteCustomExercise} onSaveNote={handleSaveNote} />;
+        main = <ProgramsPage me={me} programs={state.programs} onActivate={handleActivateProgram} onSaveProgram={handleSaveProgram} onDuplicate={handleDuplicateProgram} onDelete={handleDeleteProgram} customExercises={state.customExercises} onAddCustom={handleAddCustomExercise} onDeleteCustom={handleDeleteCustomExercise} onSaveNote={handleSaveNote} onSaveInstructions={handleSaveCustomInstructions} />;
         break;
       case "members":
         main = <MembersPage me={me} members={state.members} programs={state.programs} onOpen={setMemberProfileId} onApprove={handleApprove} onReject={handleReject} onRefresh={handleRefreshState} refreshing={refreshing} />;
