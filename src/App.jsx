@@ -6,7 +6,8 @@ import {
   Play, Camera, TrendingUp, Clock, Target, GripVertical, Menu, ShieldCheck,
   LogOut, ArrowLeft, BarChart3, Calendar, Search, Sparkles, Zap, Download,
   Loader2, Save, RefreshCw, UserCheck, UserX, ListChecks,
-  Activity, Minus, UtensilsCrossed, Footprints, Scale, Info, Wheat, Droplet
+  Activity, Minus, UtensilsCrossed, Footprints, Scale, Info, Wheat, Droplet,
+  ArrowLeftRight, CalendarClock, Undo2
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -879,6 +880,46 @@ export function dayKeyForISO(iso) {
 function todayDayKey() {
   return dayKeyForISO(todayISO());
 }
+
+/* ------------------------ Temporary workout moves ------------------------ */
+// A member can temporarily move a single occurrence of their scheduled
+// workout to a different date without touching the underlying weekly
+// program. This is tracked per-member (not on the program itself) as a pair
+// of linked entries in member.workoutMoves, keyed by ISO date:
+//   { [origISO]: { to: destISO } }    — "this date's own workout moved away"
+//   { [destISO]: { from: origISO } }  — "this date is hosting origISO's workout"
+// Both sides are always written/removed together, so a lookup from either
+// date is O(1) and there's never a dangling half-move.
+function getWorkoutMove(member, iso) {
+  const rec = member?.workoutMoves?.[iso];
+  if (!rec) return null;
+  if (rec.to) return { origISO: iso, destISO: rec.to };
+  if (rec.from) return { origISO: rec.from, destISO: iso };
+  return null;
+}
+
+// The schedule that actually applies to a given calendar date for this
+// member, once any temporary move is accounted for. Everything that used to
+// read program.days[dayKeyForISO(iso)] directly for a *specific date*
+// (building today's exercises, streaks, weekly/monthly progress, calendar
+// coloring) should read through this instead, so a move only has to be
+// taught to one function. The permanent weekly template (program.days)
+// itself is never modified — moving is purely a per-date display/lookup
+// override on top of it.
+function effectiveSchedForDate(member, program, iso) {
+  if (!program) return null;
+  const rec = member?.workoutMoves?.[iso];
+  if (rec?.to) {
+    // Its own workout was moved away for this occurrence only — behaves
+    // like a rest day here, but tagged so the UI can explain why.
+    return { type: "rest", exercises: [], movedAwayTo: rec.to };
+  }
+  if (rec?.from) {
+    const sourceSched = program.days?.[dayKeyForISO(rec.from)];
+    return { ...(sourceSched || { type: "rest", exercises: [] }), movedInFrom: rec.from };
+  }
+  return program.days?.[dayKeyForISO(iso)] || null;
+}
 function formatNiceDate(iso) {
   return isoToDate(iso).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 }
@@ -936,6 +977,11 @@ export function newMember({ id, name, role, status, avatarUrl }) {
     history: {},      // { [exerciseId]: [{date, sets, reps, weight, volume}] }
     worklogs: {},      // { [iso]: { restDay:bool, exercises: {[exerciseId]:{sets,reps,weight,done}}, completedAt } }
     exerciseNotes: {}, // { [exerciseId]: text }
+    // One-time "move this workout to another date" overrides — see
+    // getWorkoutMove/effectiveSchedForDate. Never rewrites program.days.
+    // { [origISO]: { to: destISO } } + { [destISO]: { from: origISO } }, both
+    // sides always written/removed together.
+    workoutMoves: {},
     // ---- Diet add-on fields (extend this same member record, no second object) ----
     sex: DEFAULT_SEX,
     activityLevel: DEFAULT_ACTIVITY_LEVEL,
@@ -984,7 +1030,7 @@ function recomputeStreak(m, program) {
   const firstDate = completedDates[0];
   const mustLogDay = (iso) => {
     if (!program) return true; // no active program: every day counts, so any gap breaks the streak
-    const sched = program.days?.[dayKeyForISO(iso)];
+    const sched = effectiveSchedForDate(m, program, iso);
     return !sched || sched.type === "workout";
   };
   let running = 0;
@@ -1050,7 +1096,7 @@ function normalizeState(s) {
       bodyweightKg: DEFAULT_BODYWEIGHT_KG, heightCm: DEFAULT_HEIGHT_CM, age: DEFAULT_AGE, avatarUrl: null,
       sex: DEFAULT_SEX, activityLevel: DEFAULT_ACTIVITY_LEVEL, dietGoal: DEFAULT_DIET_GOAL, weightHistory: [], calorieTargetOverride: null,
       proteinTargetOverride: null,
-      foodLog: {}, activityLog: {}, customMealTypes: [],
+      foodLog: {}, activityLog: {}, customMealTypes: [], workoutMoves: {},
       ...m,
     }])
   );
@@ -1855,7 +1901,7 @@ function countScheduledProgress(me, program, startISO, endISO) {
   let day = startISO;
   let guard = 0;
   while (day <= endISO && guard < 400) {
-    const sched = program.days[dayKeyForISO(day)];
+    const sched = effectiveSchedForDate(me, program, day);
     if (sched?.type === "workout") {
       total++;
       if (me.worklogs[day]?.completedAt) done++;
@@ -1942,7 +1988,7 @@ function Dashboard({ me, members, programs, goTo, onSelectDate }) {
   const lvl = levelInfo(me.xp);
   const progress = useMemo(() => computeProgress(me, program), [me, program]);
   const quote = pickDaily(me.name, WORKOUT_QUOTES);
-  const todaySched = program?.days?.[todayDayKey()];
+  const todaySched = effectiveSchedForDate(me, program, todayISO());
   const isRest = !program || todaySched?.type !== "workout";
   const vol7 = useMemo(() => last7DaysVolume(me), [me]);
 
@@ -1958,7 +2004,7 @@ function Dashboard({ me, members, programs, goTo, onSelectDate }) {
   if (program) {
     for (let i = 1; i <= 7; i++) {
       const iso = addDaysISO(todayISO(), i);
-      if (program.days[dayKeyForISO(iso)]?.type !== "workout") { nextRest = iso; break; }
+      if (effectiveSchedForDate(me, program, iso)?.type !== "workout") { nextRest = iso; break; }
     }
   }
 
@@ -2144,6 +2190,28 @@ function buildTodayInstances(me, todaySched, iso) {
   });
 }
 
+// Shown on either side of a temporary move — "away" on the original date
+// (now behaving like a rest day for this occurrence) and "in" on whichever
+// date is currently hosting the moved workout. Both link to the same
+// one-tap revert.
+function MovedWorkoutBanner({ kind, otherISO, onMoveBack }) {
+  return (
+    <Card className="p-4 flex items-center justify-between gap-3 flex-wrap border-amber-400/20 bg-amber-400/5">
+      <div className="flex items-center gap-2.5 text-sm text-amber-100 min-w-0">
+        <CalendarClock size={17} className="text-amber-300 shrink-0" />
+        <span className="min-w-0">
+          {kind === "away" ? (
+            <>This workout was temporarily moved to <b className="text-white">{formatNiceDate(otherISO)}</b>.</>
+          ) : (
+            <>Temporarily moved here from <b className="text-white">{formatNiceDate(otherISO)}</b>. Your regular schedule is unchanged.</>
+          )}
+        </span>
+      </div>
+      <GhostButton onClick={onMoveBack}><Undo2 size={14} /> Move back</GhostButton>
+    </Card>
+  );
+}
+
 function RestDayView({ me }) {
   const quote = pickDaily(me.name + "rest", REST_QUOTES);
   const tip = pickDaily(me.name + "tip", RECOVERY_TIPS);
@@ -2226,13 +2294,14 @@ function ExerciseProgressCard({ inst, onChange, onComplete, onOpen, done, bodywe
   );
 }
 
-function TodayPage({ me, programs, openExercise, onCompleteExercise, onEditDone, onCreateProgram }) {
+function TodayPage({ me, programs, openExercise, onCompleteExercise, onEditDone, onCreateProgram, onMoveWorkout, onMoveWorkoutBack }) {
   const program = me.activeProgramId ? programs[me.activeProgramId] : null;
   const iso = todayISO();
   const dayKey = todayDayKey();
-  const todaySched = program?.days?.[dayKey];
+  const todaySched = effectiveSchedForDate(me, program, iso);
   const [tab, setTab] = useState("progress");
-  const buildKey = `${me.activeProgramId}_${iso}`;
+  const [moveOpen, setMoveOpen] = useState(false);
+  const buildKey = `${me.activeProgramId}_${iso}_${todaySched?.movedInFrom || ""}`;
   const lastBuildKey = useRef(null);
   const [instances, setInstances] = useState([]);
 
@@ -2259,8 +2328,19 @@ function TodayPage({ me, programs, openExercise, onCompleteExercise, onEditDone,
     );
   }
   if (todaySched?.type !== "workout") {
-    return <RestDayView me={me} />;
+    return (
+      <div className="flex flex-col gap-6">
+        {todaySched?.movedAwayTo && (
+          <MovedWorkoutBanner kind="away" otherISO={todaySched.movedAwayTo} onMoveBack={() => onMoveWorkoutBack(iso)} />
+        )}
+        <RestDayView me={me} />
+      </div>
+    );
   }
+
+  // If today is hosting a workout moved in from elsewhere, moving it again
+  // should update that same move rather than starting a fresh one from today.
+  const moveSourceISO = todaySched.movedInFrom || iso;
 
   const update = (idx, patch) => setInstances((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
   const complete = (idx) => {
@@ -2280,13 +2360,19 @@ function TodayPage({ me, programs, openExercise, onCompleteExercise, onEditDone,
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <div className={`text-xs font-semibold tracking-wider uppercase mb-1 ${GRAD_TEXT}`}>{DAY_LABEL[dayKey]}</div>
-        <h1 className="text-2xl md:text-3xl font-black text-white">{program.name}</h1>
-        <div className="flex flex-wrap gap-4 text-sm text-slate-400 mt-2">
-          <span className="flex items-center gap-1.5"><Target size={15} className="text-amber-400" /> {muscles.join(", ")}</span>
-          <span className="flex items-center gap-1.5"><Clock size={15} className="text-emerald-400" /> ~{instances.length * 9} min</span>
+      {todaySched.movedInFrom && (
+        <MovedWorkoutBanner kind="in" otherISO={todaySched.movedInFrom} onMoveBack={() => onMoveWorkoutBack(iso)} />
+      )}
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className={`text-xs font-semibold tracking-wider uppercase mb-1 ${GRAD_TEXT}`}>{DAY_LABEL[dayKey]}</div>
+          <h1 className="text-2xl md:text-3xl font-black text-white">{program.name}</h1>
+          <div className="flex flex-wrap gap-4 text-sm text-slate-400 mt-2">
+            <span className="flex items-center gap-1.5"><Target size={15} className="text-amber-400" /> {muscles.join(", ")}</span>
+            <span className="flex items-center gap-1.5"><Clock size={15} className="text-emerald-400" /> ~{instances.length * 9} min</span>
+          </div>
         </div>
+        <GhostButton onClick={() => setMoveOpen(true)}><ArrowLeftRight size={14} /> Move Workout</GhostButton>
       </div>
 
       <Card className="p-5">
@@ -2338,6 +2424,12 @@ function TodayPage({ me, programs, openExercise, onCompleteExercise, onEditDone,
           )
         )}
       </div>
+
+      <MoveWorkoutModal
+        open={moveOpen} onClose={() => setMoveOpen(false)}
+        me={me} program={program} sourceISO={moveSourceISO}
+        onConfirm={(destISO) => onMoveWorkout(moveSourceISO, destISO)}
+      />
     </div>
   );
 }
@@ -2465,14 +2557,18 @@ function DayDetailExerciseRow({ iso, e, ex, doneEntry, bodyweightKg, onOpen, onS
   );
 }
 
-function DayDetailPage({ iso, me, programs, onBack, openExercise, goToToday, onEditEntry, onClearEntry }) {
+function DayDetailPage({ iso, me, programs, onBack, openExercise, goToToday, onEditEntry, onClearEntry, onMoveWorkout, onMoveWorkoutBack }) {
   const program = me.activeProgramId ? programs[me.activeProgramId] : null;
   const dayKey = dayKeyForISO(iso);
-  const sched = program?.days?.[dayKey];
+  const sched = effectiveSchedForDate(me, program, iso);
   const log = me.worklogs[iso];
   const isToday = iso === todayISO();
   const isWorkoutDay = program && sched?.type === "workout";
   const loggedVolume = Object.values(log?.exercises || {}).reduce((s, e) => s + volumeOf(e.sets, e.reps, e.weight), 0);
+  const [moveOpen, setMoveOpen] = useState(false);
+  // If this date is hosting a workout moved in from elsewhere, moving it
+  // again should update that same move rather than starting a fresh one.
+  const moveSourceISO = sched?.movedInFrom || iso;
 
   return (
     <div className="flex flex-col gap-6">
@@ -2492,16 +2588,30 @@ function DayDetailPage({ iso, me, programs, onBack, openExercise, goToToday, onE
         </Card>
       )}
 
+      {sched?.movedAwayTo && (
+        <MovedWorkoutBanner kind="away" otherISO={sched.movedAwayTo} onMoveBack={() => onMoveWorkoutBack(iso)} />
+      )}
+      {sched?.movedInFrom && (
+        <MovedWorkoutBanner kind="in" otherISO={sched.movedInFrom} onMoveBack={() => onMoveWorkoutBack(iso)} />
+      )}
+
       {!isWorkoutDay ? (
         <EmptyState
           icon="🌙" title="Rest day"
-          sub={program ? "No workout was scheduled for this day." : "No active program was set for this day."}
+          sub={
+            sched?.movedAwayTo
+              ? "This workout was temporarily moved — see above."
+              : program ? "No workout was scheduled for this day." : "No active program was set for this day."
+          }
         />
       ) : (
         <Card className="p-5">
           <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
             <SectionHeading eyebrow="Session" title={program.name} />
-            {loggedVolume > 0 && <span className="text-xs font-semibold text-emerald-300 shrink-0">Volume {loggedVolume}kg</span>}
+            <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+              {loggedVolume > 0 && <span className="text-xs font-semibold text-emerald-300">Volume {loggedVolume}kg</span>}
+              <GhostButton onClick={() => setMoveOpen(true)}><ArrowLeftRight size={14} /> Move Workout</GhostButton>
+            </div>
           </div>
           <p className="text-[11px] text-slate-500 -mt-2 mb-1">Tap the pencil to log, edit, or clear any exercise for this day.</p>
           <div className="flex flex-col gap-2.5">
@@ -2517,6 +2627,14 @@ function DayDetailPage({ iso, me, programs, onBack, openExercise, goToToday, onE
             })}
           </div>
         </Card>
+      )}
+
+      {program && (
+        <MoveWorkoutModal
+          open={moveOpen} onClose={() => setMoveOpen(false)}
+          me={me} program={program} sourceISO={moveSourceISO}
+          onConfirm={(destISO) => onMoveWorkout(moveSourceISO, destISO)}
+        />
       )}
     </div>
   );
@@ -3908,14 +4026,14 @@ function MonthCalendar({ me, program, onSelectDate }) {
       if (vol > 600) return "logged-mid";
       return "logged-low";
     }
-    const key = dayKeyForISO(iso);
-    if (program?.days?.[key]?.type === "rest" || !program) return "rest";
+    const effSched = program ? effectiveSchedForDate(me, program, iso) : null;
+    if (effSched?.type === "rest" || !program) return "rest";
     if (iso > todayIso) return "future";
     // Today's own scheduled workout isn't "missed" until the day is actually
     // over — it just hasn't been logged yet. Give it a distinct pending state
     // instead of lumping it in with genuinely missed past days.
     if (iso === todayIso) return "today-pending";
-    if (program?.days?.[key]?.type === "workout") return "missed";
+    if (effSched?.type === "workout") return "missed";
     return "none";
   };
 
@@ -4020,6 +4138,128 @@ function MonthCalendar({ me, program, onSelectDate }) {
         })}
       </div>
     </div>
+  );
+}
+
+// "Move this workout to another date, just this once" — picks a destination
+// date for the workout currently scheduled on `sourceISO` without touching
+// the underlying weekly program (program.days is never written here; see
+// effectiveSchedForDate). Mirrors DietDatePickerModal's month-grid pattern.
+function MoveWorkoutModal({ open, onClose, me, program, sourceISO, onConfirm }) {
+  const todayIso = todayISO();
+  const [cursor, setCursor] = useState(() => {
+    const t = isoToDate(sourceISO || todayIso);
+    return { y: t.getFullYear(), m: t.getMonth() };
+  });
+  const [destISO, setDestISO] = useState(null);
+
+  // Re-sync to the source date's month and clear any previous selection
+  // every time the modal (re)opens, so it never shows a stale pick.
+  useEffect(() => {
+    if (!open) return;
+    const t = isoToDate(sourceISO || todayIso);
+    setCursor({ y: t.getFullYear(), m: t.getMonth() });
+    setDestISO(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, sourceISO]);
+
+  if (!open || !sourceISO) return null;
+
+  const sourceDayKey = dayKeyForISO(sourceISO);
+  const sourceSched = program?.days?.[sourceDayKey];
+
+  const monthLabel = new Date(cursor.y, cursor.m, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const daysInMonth = new Date(cursor.y, cursor.m + 1, 0).getDate();
+  const firstWeekday = (new Date(cursor.y, cursor.m, 1).getDay() + 6) % 7;
+  const cells = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const goPrev = () => setCursor((c) => { const d = new Date(c.y, c.m - 1, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+  const goNext = () => setCursor((c) => { const d = new Date(c.y, c.m + 1, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+
+  const destSched = destISO ? effectiveSchedForDate(me, program, destISO) : null;
+  const destMove = destISO ? me.workoutMoves?.[destISO] : null;
+  const hasConflict = destSched?.type === "workout";
+  const canConfirm = !!destISO && destISO !== sourceISO;
+
+  return (
+    <Modal
+      open={open} onClose={onClose} title="Move Workout"
+      footer={
+        <>
+          <GhostButton onClick={onClose}>Cancel</GhostButton>
+          <GradientButton disabled={!canConfirm} onClick={() => { onConfirm(destISO); onClose(); }}>
+            <ArrowLeftRight size={14} /> Confirm move
+          </GradientButton>
+        </>
+      }
+    >
+      <div className="mb-4 p-3.5 rounded-2xl bg-white/[0.04] border border-white/10">
+        <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Currently scheduled</div>
+        <div className="text-white font-semibold text-sm">{DAY_LABEL[sourceDayKey]}, {formatNiceDate(sourceISO)}</div>
+        <div className="text-xs text-slate-400 mt-0.5">
+          {(sourceSched?.exercises || []).length} exercises · one-time move — your weekly program stays the same.
+        </div>
+      </div>
+
+      <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Move to</div>
+      <div className="flex items-center justify-between mb-3">
+        <button onClick={goPrev} aria-label="Previous month" className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center">
+          <ChevronLeft size={15} />
+        </button>
+        <span className="text-sm font-semibold text-white">{monthLabel}</span>
+        <button onClick={goNext} aria-label="Next month" className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-slate-300 flex items-center justify-center">
+          <ChevronRight size={15} />
+        </button>
+      </div>
+      <div className="grid grid-cols-7 gap-1.5 text-center text-[10px] text-slate-500 mb-1.5">
+        {DAY_ORDER.map((d) => <span key={d}>{DAY_SHORT[d]}</span>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1.5 mb-3">
+        {cells.map((d, i) => {
+          if (!d) return <div key={`b${i}`} />;
+          const cellIso = isoFromYMD(cursor.y, cursor.m, d);
+          const isSource = cellIso === sourceISO;
+          const isSelected = cellIso === destISO;
+          const isToday = cellIso === todayIso;
+          return (
+            <button
+              key={cellIso}
+              type="button"
+              onClick={() => !isSource && setDestISO(cellIso)}
+              disabled={isSource}
+              aria-label={`Move to ${formatNiceDate(cellIso)}`}
+              className={`relative aspect-square rounded-xl border text-xs font-semibold flex items-center justify-center transition-transform hover:scale-105 disabled:opacity-30 disabled:pointer-events-none disabled:hover:scale-100 ${
+                isSelected ? `${GRAD} text-white border-transparent` : "bg-white/[0.03] text-slate-300 border-white/5"
+              } ${isToday && !isSelected ? "ring-2 ring-white/30" : ""}`}
+            >
+              {d}
+            </button>
+          );
+        })}
+      </div>
+
+      {destISO && (
+        <div className="p-3.5 rounded-2xl bg-pink-400/5 border border-pink-400/15 flex flex-col gap-1.5">
+          <p className="text-sm text-slate-200">
+            This will temporarily move this workout to{" "}
+            <b className="text-white">{DAY_LABEL[dayKeyForISO(destISO)]}, {formatNiceDate(destISO)}</b>.
+          </p>
+          <p className="text-xs text-slate-400">Your regular {DAY_LABEL[sourceDayKey]} schedule will not be changed.</p>
+          {hasConflict && (
+            <p className="text-xs text-amber-300 flex items-start gap-1.5 mt-1">
+              <span>⚠️</span>
+              <span>
+                {destMove?.from
+                  ? `${formatShortDate(destISO)} is already hosting a workout moved from ${formatShortDate(destMove.from)} — moving here will replace it.`
+                  : `${formatShortDate(destISO)} already has its own scheduled workout — moving here will replace it for this date only.`}
+              </span>
+            </p>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -6258,7 +6498,7 @@ export default function App() {
     const m = state.members[session.userId];
     const before = m.unlocked || [];
     const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
-    const sched = program?.days?.[dayKeyForISO(iso)];
+    const sched = effectiveSchedForDate(m, program, iso);
     const { next, newIsPR, workoutsDelta } = upsertWorklogEntryForDate(m, iso, exerciseId, patch, sched, program);
     const programs = syncAllOwnedProgramsToLatestLog(state.programs, m.id, exerciseId, next.history[exerciseId]);
     persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
@@ -6284,6 +6524,52 @@ export default function App() {
     const programs = syncAllOwnedProgramsToLatestLog(state.programs, m.id, exerciseId, next.history[exerciseId]);
     persist({ ...state, members: { ...state.members, [session.userId]: next }, programs });
     showToast("Log cleared", "🗑️");
+  };
+
+  // Temporarily move the workout normally scheduled on sourceISO to destISO,
+  // for this occurrence only — program.days (the permanent weekly template)
+  // is never touched, see effectiveSchedForDate. Both sides of the move are
+  // written together so a lookup from either date is O(1).
+  //
+  // Re-pointing an existing move (sourceISO was already moved elsewhere, or
+  // destISO was already hosting a different moved workout) cleanly retires
+  // the stale half of whichever move it's replacing, rather than leaving a
+  // dangling entry. Streaks are recomputed afterward since a move can shift
+  // which dates are actually required to keep the streak alive.
+  const handleMoveWorkout = (sourceISO, destISO) => {
+    if (!sourceISO || !destISO || sourceISO === destISO) return;
+    const m = state.members[session.userId];
+    const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
+    const moves = { ...(m.workoutMoves || {}) };
+
+    // sourceISO already pointed somewhere else — free up that old destination.
+    const priorOut = moves[sourceISO];
+    if (priorOut?.to) delete moves[priorOut.to];
+    // destISO was already hosting a different move — retire that move entirely.
+    const priorIn = moves[destISO];
+    if (priorIn?.from && priorIn.from !== sourceISO) delete moves[priorIn.from];
+
+    moves[sourceISO] = { to: destISO };
+    moves[destISO] = { from: sourceISO };
+
+    const next = applyStreak({ ...m, workoutMoves: moves }, program);
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    showToast(`Workout moved to ${formatShortDate(destISO)}`, "🔁");
+  };
+
+  // Restore a temporarily moved workout to its original date. `iso` can be
+  // either side of the move (the original date or the one it was moved to).
+  const handleMoveWorkoutBack = (iso) => {
+    const m = state.members[session.userId];
+    const move = getWorkoutMove(m, iso);
+    if (!move) return;
+    const program = m.activeProgramId ? state.programs[m.activeProgramId] : null;
+    const moves = { ...m.workoutMoves };
+    delete moves[move.origISO];
+    delete moves[move.destISO];
+    const next = applyStreak({ ...m, workoutMoves: moves }, program);
+    persist({ ...state, members: { ...state.members, [session.userId]: next } });
+    showToast("Move reverted", "↩️");
   };
 
   const handleSaveNote = (exerciseId_, text) => {
@@ -6456,12 +6742,14 @@ export default function App() {
         goToToday={() => handleGoTo("today")}
         onEditEntry={handleEditWorklogForDate}
         onClearEntry={handleClearWorklogForDate}
+        onMoveWorkout={handleMoveWorkout}
+        onMoveWorkoutBack={handleMoveWorkoutBack}
       />
     );
   } else {
     switch (page) {
       case "today":
-        main = <TodayPage me={me} programs={state.programs} openExercise={setExerciseId} onCompleteExercise={handleCompleteExercise} onEditDone={handleEditDone} onCreateProgram={() => handleGoTo("programs")} />;
+        main = <TodayPage me={me} programs={state.programs} openExercise={setExerciseId} onCompleteExercise={handleCompleteExercise} onEditDone={handleEditDone} onCreateProgram={() => handleGoTo("programs")} onMoveWorkout={handleMoveWorkout} onMoveWorkoutBack={handleMoveWorkoutBack} />;
         break;
       case "programs":
         main = <ProgramsPage me={me} programs={state.programs} onActivate={handleActivateProgram} onSaveProgram={handleSaveProgram} onDuplicate={handleDuplicateProgram} onDelete={handleDeleteProgram} customExercises={state.customExercises} onAddCustom={handleAddCustomExercise} onEditCustom={handleEditCustomExercise} onDeleteCustom={handleDeleteCustomExercise} onSaveNote={handleSaveNote} onSaveInstructions={handleSaveCustomInstructions} />;
