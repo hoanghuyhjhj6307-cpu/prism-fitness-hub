@@ -920,6 +920,35 @@ function effectiveSchedForDate(member, program, iso) {
   }
   return program.days?.[dayKeyForISO(iso)] || null;
 }
+
+// Which worklog date(s) should be treated as "belonging" to a given calendar
+// cell for display purposes (progress rings, momentum volume, calendar
+// coloring), once a move is accounted for. A day whose own workout was moved
+// away no longer owns that occurrence, so nothing should be attributed to it
+// here even if it happens to have real logged data (e.g. it was completed
+// before being moved). A day that's hosting a moved-in workout inherits
+// whichever date the actual logging landed on — the source date if it was
+// completed before the move, or the day itself if completed after. This
+// never touches the underlying worklogs/history data, only where it's
+// displayed as "done".
+function effectiveLogDatesForCell(member, iso) {
+  const rec = member?.workoutMoves?.[iso];
+  if (rec?.to) return [];
+  if (rec?.from) return [rec.from, iso];
+  return [iso];
+}
+
+// The worklog (if any) that should visually represent a given calendar cell,
+// preferring one that actually has logged progress (partial or complete)
+// among the effective dates for that cell.
+function effectiveWorklogForCell(member, iso) {
+  const dates = effectiveLogDatesForCell(member, iso);
+  for (const d of dates) {
+    const log = member.worklogs?.[d];
+    if (log && (log.completedAt || Object.values(log.exercises || {}).some((e) => e.done))) return log;
+  }
+  return null;
+}
 function formatNiceDate(iso) {
   return isoToDate(iso).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 }
@@ -1904,7 +1933,7 @@ function countScheduledProgress(me, program, startISO, endISO) {
     const sched = effectiveSchedForDate(me, program, day);
     if (sched?.type === "workout") {
       total++;
-      if (me.worklogs[day]?.completedAt) done++;
+      if (effectiveWorklogForCell(me, day)?.completedAt) done++;
     }
     day = addDaysISO(day, 1);
     guard++;
@@ -1920,7 +1949,7 @@ function monthEndISO(iso) {
 
 export function computeProgress(me, program, todayOverride) {
   const iso = todayOverride || todayISO();
-  const [weekStart] = weekBoundsISO(iso);
+  const [weekStart, weekEnd] = weekBoundsISO(iso);
   const monthStart = iso.slice(0, 8) + "01";
   // Month total covers every scheduled workout day in the whole month (Aug 1–31), not
   // just the days elapsed so far — so "3/4" only shows once the month is actually done
@@ -1932,7 +1961,11 @@ export function computeProgress(me, program, todayOverride) {
   // dip into the previous month — e.g. a Monday week-start on the last days of August
   // while "today" is already in September. A single month-anchored loop would silently
   // undercount those early-week days.
-  const week = countScheduledProgress(me, program, weekStart, iso);
+  // Week total covers every scheduled workout day for the whole Mon–Sun week, not just
+  // the days elapsed so far — mirroring the month total above, so e.g. a week with 3
+  // scheduled sessions reads "0/3" on Monday instead of "0/1" as if only the days
+  // already passed counted toward the denominator.
+  const week = countScheduledProgress(me, program, weekStart, weekEnd);
   const month = countScheduledProgress(me, program, monthStart, monthEnd);
   return {
     weekPct: week.total ? Math.round((week.done / week.total) * 100) : 0,
@@ -1941,14 +1974,21 @@ export function computeProgress(me, program, todayOverride) {
   };
 }
 
+function volumeForCell(me, iso) {
+  const dates = effectiveLogDatesForCell(me, iso);
+  if (dates.length === 0) return 0;
+  let vol = 0;
+  Object.values(me.history || {}).forEach((arr) => {
+    arr.forEach((h) => { if (dates.includes(h.date)) vol += h.volume; });
+  });
+  return vol;
+}
+
 function last7DaysVolume(me) {
   const days = [];
   for (let i = 6; i >= 0; i--) {
     const iso = addDaysISO(todayISO(), -i);
-    let vol = 0;
-    Object.values(me.history || {}).forEach((arr) => {
-      arr.forEach((h) => { if (h.date === iso) vol += h.volume; });
-    });
+    const vol = volumeForCell(me, iso);
     days.push({ day: isoToDate(iso).toLocaleDateString(undefined, { weekday: "short" })[0], vol, iso });
   }
   return days;
@@ -4019,8 +4059,12 @@ function MonthCalendar({ me, program, onSelectDate }) {
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
   const statusFor = (iso) => {
-    const log = me.worklogs[iso];
-    if (log?.completedAt) {
+    // Any logged exercise counts here, not just a fully-completed session —
+    // and this reads through the move-aware lookup so a workout that was
+    // logged before being moved to another day shows up there instead of on
+    // its old date. See effectiveWorklogForCell.
+    const log = effectiveWorklogForCell(me, iso);
+    if (log) {
       const vol = Object.values(log.exercises || {}).reduce((s, e) => s + volumeOf(e.sets, e.reps, e.weight), 0);
       if (vol > 1500) return "logged-high";
       if (vol > 600) return "logged-mid";
