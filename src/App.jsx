@@ -1047,7 +1047,18 @@ function recomputeAchievements(m) {
 // old logic did.
 function recomputeStreak(m, program) {
   const worklogs = m.worklogs || {};
-  const completedDates = Object.keys(worklogs).filter((iso) => worklogs[iso]?.completedAt).sort();
+  const moves = m.workoutMoves || {};
+  // Any date that could possibly count as "practiced" once moves are
+  // accounted for: either it has its own logged data, or it's hosting a
+  // workout moved in from a date that has logged data (see
+  // effectiveWorklogForCell). A date whose own workout was moved away is
+  // intentionally left out here even if it still has raw logged data, so a
+  // moved session keeps the streak alive on its new day, not its old one.
+  const candidateDates = new Set([...Object.keys(worklogs), ...Object.keys(moves)]);
+  // Any logged exercise counts toward the streak for that day, not only a
+  // fully-completed session — matches the calendar/momentum/progress
+  // "practiced" logic elsewhere.
+  const completedDates = Array.from(candidateDates).filter((iso) => !!effectiveWorklogForCell(m, iso)).sort();
   if (completedDates.length === 0) {
     return { streak: 0, longestStreak: m.longestStreak || 0, lastActiveDate: null };
   }
@@ -1068,7 +1079,7 @@ function recomputeStreak(m, program) {
     let cursor = firstDate;
     let guard = 0;
     while (cursor <= endDate && guard < 3660 * 3) {
-      if (worklogs[cursor]?.completedAt) running += 1;
+      if (effectiveWorklogForCell(m, cursor)) running += 1;
       else if (mustLogDay(cursor)) running = 0;
       if (running > longest) longest = running;
       cursor = addDaysISO(cursor, 1);
@@ -1933,7 +1944,10 @@ function countScheduledProgress(me, program, startISO, endISO) {
     const sched = effectiveSchedForDate(me, program, day);
     if (sched?.type === "workout") {
       total++;
-      if (effectiveWorklogForCell(me, day)?.completedAt) done++;
+      // Any logged exercise counts as practice for this day, not only a
+      // fully-completed session — mirrors the calendar/momentum highlight
+      // logic in effectiveWorklogForCell.
+      if (effectiveWorklogForCell(me, day)) done++;
     }
     day = addDaysISO(day, 1);
     guard++;
